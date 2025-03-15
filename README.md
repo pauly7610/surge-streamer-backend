@@ -26,19 +26,7 @@ This project provides the backend infrastructure for the Surge Streamer applicat
 
 **URL**: https://github.com/pauly7610/surge-streamer-backend
 
-## Lovable Development Info
-
-**URL**: https://lovable.dev/projects/048417a8-8a7b-433a-b2a3-96bfd1247e29
-
 ### How to edit this code
-
-There are several ways to edit this application:
-
-**Use Lovable**
-
-Visit the [Lovable Project](https://lovable.dev/projects/048417a8-8a7b-433a-b2a3-96bfd1247e29) and interact with the AI to make changes.
-
-**Use your preferred IDE**
 
 If you want to work locally using your own IDE, you can clone this repo and push changes:
 
@@ -55,7 +43,3 @@ npm i
 # Start the development server
 npm run dev
 ```
-
-**Edit a file directly in GitHub or use GitHub Codespaces**
-
-For more details on deployment, custom domains, or other Lovable-specific features, check the [Lovable documentation](https://docs.lovable.dev/).
