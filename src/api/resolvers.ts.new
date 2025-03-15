@@ -1,0 +1,258 @@
+import { withFilter } from 'graphql-subscriptions';
+import { PubSub } from 'graphql-subscriptions';
+import { GeospatialUtils } from '../utils/GeospatialUtils';
+import { DataService } from '../services/DataService';
+import { PredictionService } from '../services/PredictionService';
+import { SystemMonitoringService } from '../services/SystemMonitoringService';
+import { WeatherConnector } from '../connectors/WeatherConnector';
+import { GraphQLScalarType, Kind } from 'graphql';
+import { LocationService } from '../services/LocationService';
+import { TrafficConnector } from '../connectors/TrafficConnector';
+import { EventsConnector } from '../connectors/EventsConnector';
+import { PipelineManager } from '../pipeline/PipelineManager';
+
+// Topics for subscriptions
+export const TOPICS = {
+  RIDE_REQUEST_UPDATED: 'RIDE_REQUEST_UPDATED',
+  WEATHER_UPDATED: 'WEATHER_UPDATED',
+  TRAFFIC_UPDATED: 'TRAFFIC_UPDATED',
+  EVENT_UPDATED: 'EVENT_UPDATED',
+  SURGE_PREDICTION_UPDATED: 'SURGE_PREDICTION_UPDATED',
+  GRID_CELL_UPDATED: 'GRID_CELL_UPDATED',
+  SYSTEM_HEALTH_UPDATED: 'SYSTEM_HEALTH_UPDATED',
+  SURGE_ALERT: 'SURGE_ALERT',
+};
+
+// Create PubSub instance for subscriptions
+const pubsub = new PubSub();
+
+// Define DateTime scalar type
+const DateTime = new GraphQLScalarType({
+  name: 'DateTime',
+  description: 'ISO-8601 formatted date-time string',
+  serialize(value: Date | string | number) {
+    // Convert outgoing Date to ISO string for JSON
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    return value;
+  },
+  parseValue(value: string | number) {
+    // Convert incoming ISO string to Date
+    return new Date(value);
+  },
+  parseLiteral(ast) {
+    if (ast.kind === Kind.STRING) {
+      // Convert AST string to Date
+      return new Date(ast.value);
+    }
+    return null;
+  }
+});
+
+/**
+ * GraphQL resolvers for the Surge Streamer API
+ */
+export const resolvers = {
+  Query: {
+    /**
+     * Get ride requests within a geospatial area
+     */
+    rideRequests: async (_, { query }, { dataService }: { dataService: DataService }) => {
+      return dataService.getRideRequests(query);
+    },
+
+    /**
+     * Get weather data within a geospatial area
+     */
+    weatherData: async (_, { query }, { dataService }: { dataService: DataService }) => {
+      return dataService.getWeatherData(query);
+    },
+
+    /**
+     * Get traffic data within a geospatial area
+     */
+    trafficData: async (_, { query }, { dataService }: { dataService: DataService }) => {
+      return dataService.getTrafficData(query);
+    },
+
+    /**
+     * Get events within a geospatial area
+     */
+    events: async (_, { query }, { dataService }: { dataService: DataService }) => {
+      return dataService.getEvents(query);
+    },
+
+    /**
+     * Get system health metrics
+     */
+    systemHealth: async (_, __, { services }) => {
+      const { pipelineManager } = services;
+      const systemMonitoringService = new SystemMonitoringService(pipelineManager);
+      return {
+        status: 'HEALTHY',
+        uptime: 3600, // seconds
+        connectorStatus: [
+          {
+            name: 'WeatherConnector',
+            status: 'CONNECTED',
+            lastUpdated: new Date().toISOString(),
+            message: null,
+          },
+          {
+            name: 'TrafficConnector',
+            status: 'CONNECTED',
+            lastUpdated: new Date().toISOString(),
+            message: null,
+          },
+          {
+            name: 'EventsConnector',
+            status: 'CONNECTED',
+            lastUpdated: new Date().toISOString(),
+            message: null,
+          },
+        ],
+        lastUpdated: new Date().toISOString(),
+      };
+    },
+    
+    /**
+     * Get surge prediction for a location
+     */
+    getSurgePrediction: async (_, { locationId }, { services }) => {
+      const { predictionService } = services;
+      return predictionService.getLatestPredictionForLocation(locationId);
+    },
+    
+    /**
+     * Get surge predictions in a radius
+     */
+    getSurgePredictionsInRadius: async (_, { latitude, longitude, radius }, { services }) => {
+      const { predictionService } = services;
+      return predictionService.getSurgePredictionsInRadius(latitude, longitude, radius);
+    },
+
+    /**
+     * Get historical surge data
+     */
+    getHistoricalSurge: async (_, { locationId, startTime, endTime }, { services }) => {
+      // Implementation will be added later
+      return [];
+    },
+
+    /**
+     * Get active locations
+     */
+    getActiveLocations: async (_, __, { services }) => {
+      const { locationService } = services;
+      return locationService.getActiveLocations();
+    },
+    
+    /**
+     * Get location by ID
+     */
+    getLocation: async (_, { id }, { services }) => {
+      const { locationService } = services;
+      return locationService.getLocationById(id);
+    },
+    
+    /**
+     * Get locations within a radius
+     */
+    getLocationsInRadius: async (_, { latitude, longitude, radius }, { services }) => {
+      const { locationService } = services;
+      return locationService.getLocationsInRadius(latitude, longitude, radius);
+    },
+  },
+
+  Mutation: {
+    /**
+     * Update location settings
+     */
+    updateLocationSettings: async (_, { id, settings }, { services }) => {
+      const { locationService } = services;
+      return locationService.updateLocationSettings(id, settings);
+    },
+
+    /**
+     * Trigger a prediction update
+     */
+    triggerPredictionUpdate: async (_, { locationId }, { services }) => {
+      const { locationService, predictionService } = services;
+      const location = await locationService.getLocationById(locationId);
+      
+      if (!location) {
+        throw new Error(`Location with ID ${locationId} not found`);
+      }
+      
+      const prediction = await predictionService.generatePredictionForLocation(location);
+      await predictionService.storePrediction(prediction);
+      
+      // Publish the prediction update
+      pubsub.publish(TOPICS.SURGE_PREDICTION_UPDATED, { surgePredictionUpdated: prediction });
+      
+      return prediction;
+    },
+
+    /**
+     * Add a monitored location
+     */
+    addMonitoredLocation: async (_, { latitude, longitude, name }, { services }) => {
+      const { locationService } = services;
+      return locationService.addLocation({
+        name,
+        latitude,
+        longitude,
+        isActive: true,
+      });
+    },
+
+    /**
+     * Remove a monitored location
+     */
+    removeMonitoredLocation: async (_, { id }, { services }) => {
+      const { locationService } = services;
+      return locationService.removeLocation(id);
+    },
+  },
+
+  Subscription: {
+    /**
+     * Subscribe to surge prediction updates
+     */
+    surgePredictionUpdated: {
+      subscribe: () => pubsub.asyncIterator([TOPICS.SURGE_PREDICTION_UPDATED]),
+    },
+
+    /**
+     * Subscribe to real-time surge alerts
+     */
+    realTimeSurgeAlerts: {
+      subscribe: () => pubsub.asyncIterator([TOPICS.SURGE_ALERT]),
+    },
+
+    /**
+     * Subscribe to weather updates
+     */
+    weatherUpdates: {
+      subscribe: () => pubsub.asyncIterator([TOPICS.WEATHER_UPDATED]),
+    },
+
+    /**
+     * Subscribe to traffic updates
+     */
+    trafficUpdates: {
+      subscribe: () => pubsub.asyncIterator([TOPICS.TRAFFIC_UPDATED]),
+    },
+
+    /**
+     * Subscribe to event updates
+     */
+    eventUpdates: {
+      subscribe: () => pubsub.asyncIterator([TOPICS.EVENT_UPDATED]),
+    },
+  },
+
+  // Custom scalar for DateTime
+  DateTime,
+}; 

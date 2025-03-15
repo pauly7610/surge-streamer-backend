@@ -1,147 +1,158 @@
 # Surge Streamer Backend
 
-A real-time data streaming system for Uber Surge Prediction, processing ride requests and driver locations to generate surge pricing predictions.
+A real-time data streaming system for Uber Surge Prediction.
 
 ## Architecture
 
-The Surge Streamer Backend is built on a modern streaming architecture with the following components:
+This project implements a real-time data streaming system that collects, processes, and analyzes data from multiple sources to predict surge pricing for ride-sharing services. The architecture follows a modern event-driven design with the following components:
 
 ### Core Components
 
-- **Data Source Connectors**: Connect to external data sources (ride requests, driver locations, weather, traffic, events)
-- **Stream Processing Pipeline**: Process and transform data streams using RxJS
-- **Kafka Integration**: Message streaming and event sourcing
-- **Geospatial Processing**: H3 hexagonal grid system for geospatial indexing and analysis
-- **ML Prediction**: TensorFlow.js-based prediction model for surge pricing
+1. **Data Source Connectors**: Connect to various data sources and emit events
 
-### Implemented Components
+   - Ride Request API Connector
+   - Weather API Connector
+   - Traffic API Connector
+   - Events API Connector
 
-- ✅ **DataSourceConnector Interface**: Generic interface for all data source connectors
-- ✅ **RideRequestConnector**: Connector for ride request data
-- ✅ **DriverLocationConnector**: WebSocket-based connector for driver location data
-- ✅ **StreamProcessor**: RxJS-based pipeline for processing data streams
-- ✅ **PipelineManager**: Coordinates data flow between connectors and processors
-- ✅ **KafkaService**: Service for Kafka message production and consumption
-- ✅ **GeospatialUtils**: H3-based utilities for geospatial operations
-- ✅ **Avro Schemas**: Schema definitions for Kafka message serialization
-- ✅ **Data Models**: TypeScript interfaces for all data types
+2. **Stream Processing Pipeline**: Processes and transforms data streams
+
+   - Combines data from multiple sources
+   - Aggregates data by geospatial grid cells
+   - Applies transformations and enrichments
+
+3. **Kafka Integration**: Provides reliable message delivery and stream processing
+
+   - Topics for different data types
+   - Producers and consumers for data flow
+
+4. **Geospatial Processing**: Handles location-based data using H3 grid system
+
+   - Converts lat/lng to H3 indexes
+   - Performs geospatial operations and calculations
+
+5. **ML Prediction Model**: Generates surge predictions based on processed data
+
+   - Feature engineering
+   - Model training and evaluation
+   - Real-time prediction
+
+6. **Storage Layer**: Persists data for analysis and model training
+
+   - Time-series data storage
+   - Historical data for model training
+
+7. **GraphQL API**: Provides a flexible interface for clients
+   - Real-time data subscriptions
+   - Query capabilities for historical data
 
 ### Data Flow
 
-1. Data sources emit events to connectors
-2. Connectors transform raw data into standardized events
-3. Stream processors enrich and process events
-4. Processed data is sent to Kafka topics
-5. Prediction service generates surge predictions
-6. API serves predictions to clients
+1. Data source connectors collect data from various APIs
+2. Raw data is sent to Kafka topics
+3. Stream processor aggregates and enriches data
+4. Aggregated data is processed by the ML prediction model
+5. Predictions are stored and made available via the API
+6. Clients consume real-time predictions and historical data
 
-## Setup
+## Getting Started
 
 ### Prerequisites
 
-- Node.js (v18+)
-- npm or yarn
-- Kafka (optional, for production)
+- Node.js 16+
+- Docker and Docker Compose
+- Kafka
+- MongoDB
+- Redis
 
 ### Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/surge-streamer-backend.git
-cd surge-streamer-backend
+1. Clone the repository:
 
-# Install dependencies
-npm install
+   ```
+   git clone https://github.com/yourusername/surge-streamer-backend.git
+   cd surge-streamer-backend
+   ```
 
-# Create environment file
-cp .env.example .env.development
-```
+2. Install dependencies:
 
-### Configuration
+   ```
+   npm install
+   ```
 
-Edit the `.env.development` file with your configuration:
+3. Set up environment variables:
 
-```
-NODE_ENV=development
-PORT=3000
-HOST=localhost
+   ```
+   cp .env.example .env
+   ```
 
-# Supabase (if using)
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_key
+   Edit the `.env` file with your configuration.
 
-# Kafka (if using)
-KAFKA_BROKERS=localhost:9092
-KAFKA_CLIENT_ID=surge-streamer
-KAFKA_CONSUMER_GROUP=surge-streamer-group
+4. Start the required services using Docker Compose:
 
-# Geospatial
-DEFAULT_H3_RESOLUTION=8
-DEFAULT_BOUNDING_BOX_RADIUS_KM=5
-```
+   ```
+   docker-compose up -d
+   ```
+
+5. Build the project:
+   ```
+   npm run build
+   ```
 
 ### Running the Application
 
-```bash
-# Development mode
-npm run dev
+Start the application in development mode:
 
-# Production build
+```
+npm run dev
+```
+
+For production:
+
+```
 npm run build
 npm start
 ```
 
-## API Endpoints
+## Development
 
-- `GET /health`: Health check endpoint
-- `GET /api/status`: Get pipeline status
-- `POST /api/pipeline/start`: Start the data pipeline
-- `POST /api/pipeline/stop`: Stop the data pipeline
-
-## Project Structure
+### Project Structure
 
 ```
 src/
-├── connectors/       # Data source connectors
-│   ├── DataSourceConnector.ts  # Base interface
-│   ├── RideRequestConnector.ts # Ride request connector
-│   └── DriverLocationConnector.ts # Driver location connector
-├── pipeline/         # Stream processing pipeline
-│   ├── StreamProcessor.ts      # RxJS-based processor
-│   └── PipelineManager.ts      # Pipeline coordination
-├── schemas/          # Data schemas
-│   ├── DataModels.ts           # TypeScript interfaces
-│   └── AvroSchemas.ts          # Avro schemas for Kafka
-├── utils/            # Utility functions
-│   ├── AvroUtils.ts            # Avro serialization utilities
-│   ├── GeospatialUtils.ts      # H3 geospatial utilities
-│   └── KafkaService.ts         # Kafka integration
-├── config.ts         # Configuration
-└── index.ts          # Application entry point
+├── connectors/        # Data source connectors
+├── pipeline/          # Stream processing pipeline
+├── processing/        # Data processing utilities
+├── prediction/        # ML prediction models
+├── api/               # GraphQL API
+├── models/            # Data models
+├── schemas/           # Schema definitions
+├── utils/             # Utility functions
+├── config/            # Configuration
+├── index.ts           # Application entry point
+└── config.ts          # Configuration
 ```
-
-## Development
 
 ### Adding a New Data Source
 
-1. Create a connector in `src/connectors/` that implements the `DataSourceConnector` interface
-2. Add the connector to the `PipelineManager` in `initializeConnectors()`
-3. Create a processor for the data source in `initializeProcessors()`
-4. Set up the subscription in `setupSubscriptions()`
+1. Create a new connector in `src/connectors/` that implements the `DataSourceConnector` interface
+2. Add the connector to the stream processor in `src/index.ts`
+3. Update the stream processor to handle the new data type
 
-### Adding a Processing Stage
+### Testing
 
-1. Create a processor function that takes input data and returns processed data
-2. Add it to the appropriate `StreamProcessor` instance using `addStage()`
+Run tests:
 
-## Next Steps
+```
+npm test
+```
 
-- Implement additional data source connectors (Weather, Traffic, Events)
-- Develop the ML prediction model using TensorFlow.js
-- Add data persistence layer for historical analysis
-- Implement real-time visualization API endpoints
-- Set up monitoring and alerting for the pipeline
+Run tests with coverage:
+
+```
+npm run test:coverage
+```
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the LICENSE file for details.

@@ -24,25 +24,129 @@ export interface GeoBoundingBox {
 export interface H3Cell {
   h3Index: string;
   resolution: number;
-  centerCoordinates: GeoCoordinates;
+  centerCoordinates: GeoLocation;
 }
 
 /**
- * Ride request data model
+ * Geographic location
  */
-export interface RideRequest {
+export interface GeoLocation {
+  latitude: number;
+  longitude: number;
+}
+
+/**
+ * Base data interface with common properties
+ */
+export interface BaseData {
+  timestamp: string;
+  h3Index?: string;
+}
+
+/**
+ * Ride request data from the Ride Request API
+ */
+export interface RideRequestData extends BaseData {
   requestId: string;
   userId: string;
-  timestamp: string;
-  pickupLocation: GeoCoordinates;
-  dropoffLocation: GeoCoordinates;
+  location: GeoLocation;
+  destination?: GeoLocation;
+  estimatedDistance?: number;
+  estimatedDuration?: number;
   requestStatus: 'PENDING' | 'ACCEPTED' | 'CANCELLED' | 'COMPLETED';
-  vehicleType: 'ECONOMY' | 'COMFORT' | 'PREMIUM';
-  estimatedDistance: number; // in kilometers
-  estimatedDuration: number; // in minutes
-  paymentMethod: string;
-  specialRequests?: string[];
-  h3Index?: string; // H3 index of the pickup location
+  surgeMultiplier?: number;
+}
+
+/**
+ * Weather data from the Weather API
+ */
+export interface WeatherData extends BaseData {
+  location: GeoLocation;
+  temperature: number;
+  humidity: number;
+  windSpeed: number;
+  windDirection: number;
+  precipitation: number;
+  weatherCondition: 'CLEAR' | 'CLOUDY' | 'RAIN' | 'SNOW' | 'STORM' | 'FOG' | 'DRIZZLE';
+}
+
+/**
+ * Traffic data from the Traffic API
+ */
+export interface TrafficData extends BaseData {
+  location: GeoLocation;
+  congestionLevel: number; // 0-100
+  averageSpeed: number; // km/h
+  incidentCount: number;
+  roadClosures: boolean;
+}
+
+/**
+ * Event venue information
+ */
+export interface EventVenue {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  capacity: number;
+  type: 'STADIUM' | 'ARENA' | 'THEATER' | 'CONVENTION_CENTER' | 'OUTDOOR' | 'PARK' | 'OTHER';
+}
+
+/**
+ * Event data from the Events API
+ */
+export interface EventData extends BaseData {
+  id: string;
+  name: string;
+  type: 'SPORTS' | 'CONCERT' | 'FESTIVAL' | 'CONFERENCE' | 'POLITICAL' | 'PARADE' | 'OTHER';
+  startTime: string;
+  endTime: string;
+  venue: EventVenue;
+  location?: GeoLocation;
+  estimatedAttendance: number;
+  ticketsSold?: number;
+  isHighDemand: boolean;
+}
+
+/**
+ * Aggregated data for a specific H3 grid cell
+ */
+export interface GridCellData {
+  h3Index: string;
+  centerPoint: GeoLocation;
+  timestamp: string;
+  rideRequests: number;
+  activeDrivers?: number;
+  weatherData?: WeatherData;
+  trafficData?: TrafficData;
+  nearbyEvents?: EventData[];
+}
+
+/**
+ * Surge prediction result
+ */
+export interface SurgePrediction {
+  id: string;
+  locationId: string;
+  h3Index: string;
+  timestamp: string;
+  surgeMultiplier: number;
+  confidence: number;
+  predictedDuration: number; // minutes
+  factors: SurgeFactor[];
+}
+
+/**
+ * Historical surge data for model training
+ */
+export interface HistoricalSurgeData {
+  locationId: string;
+  h3Index: string;
+  timestamp: string;
+  surgeMultiplier: number;
+  demandLevel: number;
+  supplyLevel: number;
 }
 
 /**
@@ -58,78 +162,6 @@ export interface DriverLocation {
   vehicleType: 'ECONOMY' | 'COMFORT' | 'PREMIUM';
   batteryLevel?: number; // percentage
   h3Index?: string; // H3 index of the current location
-}
-
-/**
- * Weather data model
- */
-export interface WeatherData {
-  timestamp: string;
-  location: GeoCoordinates;
-  temperature: number; // Celsius
-  precipitation: number; // mm
-  humidity: number; // percentage
-  windSpeed: number; // km/h
-  windDirection: number; // 0-359 degrees
-  weatherCondition: string; // e.g., "clear", "rain", "snow"
-  h3Index?: string;
-}
-
-/**
- * Traffic data model
- */
-export interface TrafficData {
-  timestamp: string;
-  location: GeoCoordinates;
-  roadSegmentId: string;
-  congestionLevel: number; // 0-1 scale
-  averageSpeed: number; // km/h
-  incidentType?: 'ACCIDENT' | 'CONSTRUCTION' | 'CLOSURE' | 'OTHER';
-  incidentSeverity?: 'LOW' | 'MEDIUM' | 'HIGH';
-  h3Index?: string;
-}
-
-/**
- * Event data model
- */
-export interface EventData {
-  eventId: string;
-  title: string;
-  description?: string;
-  location: GeoCoordinates;
-  venue?: string;
-  startTime: string;
-  endTime: string;
-  category: string;
-  expectedAttendance: number;
-  h3Index?: string;
-}
-
-/**
- * Surge prediction data model
- */
-export interface SurgePrediction {
-  predictionId: string;
-  timestamp: string;
-  h3Index: string;
-  resolution: number;
-  demandLevel: number; // 0-1 scale
-  confidenceScore: number; // 0-1 scale
-  predictionWindow: number; // minutes
-  features?: Record<string, number>; // Feature values used for prediction
-}
-
-/**
- * Surge pricing data model
- */
-export interface SurgePricing {
-  h3Index: string;
-  timestamp: string;
-  multiplier: number; // e.g., 1.5x, 2.0x
-  basePrice: number;
-  currency: string;
-  vehicleTypes: ('ECONOMY' | 'COMFORT' | 'PREMIUM')[];
-  expiresAt: string;
 }
 
 /**
@@ -269,4 +301,63 @@ export interface GeospatialQuery {
     start: string;
     end: string;
   };
+}
+
+/**
+ * Surge factor
+ */
+export interface SurgeFactor {
+  name: string;
+  impact: number; // 0-1 representing percentage impact
+  description: string;
+}
+
+/**
+ * Location model (aligned with frontend)
+ */
+export interface Location {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  h3Index: string;
+  radius: number; // meters
+  isActive: boolean;
+  settings?: LocationSettings;
+  currentSurge?: number;
+  lastUpdated?: string;
+}
+
+/**
+ * Location settings
+ */
+export interface LocationSettings {
+  alertThreshold: number;
+  monitorWeather: boolean;
+  monitorTraffic: boolean;
+  monitorEvents: boolean;
+  updateFrequency: number; // minutes
+}
+
+/**
+ * Surge alert
+ */
+export interface SurgeAlert {
+  id: string;
+  locationId: string;
+  timestamp: string;
+  surgeMultiplier: number;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  message: string;
+  factors: SurgeFactor[];
+  estimatedDuration: number; // minutes
+}
+
+/**
+ * Data event interface
+ */
+export interface DataEvent {
+  source: string;
+  timestamp: Date;
+  payload: any;
 } 

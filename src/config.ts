@@ -29,8 +29,9 @@ export const config = {
   },
   
   server: {
-    port: parseInt(process.env.PORT || '3000', 10),
-    host: process.env.HOST || 'localhost',
+    port: process.env.PORT ? parseInt(process.env.PORT) : 3000,
+    host: process.env.HOST || '0.0.0.0',
+    env: process.env.NODE_ENV || 'development',
   },
   
   logging: {
@@ -57,17 +58,20 @@ export const config = {
   },
   
   kafka: {
-    clientId: process.env.KAFKA_CLIENT_ID || 'surge-streamer',
-    brokers: (process.env.KAFKA_BROKERS || 'localhost:9092').split(','),
-    consumerGroup: process.env.KAFKA_CONSUMER_GROUP || 'surge-streamer-group',
+    brokers: process.env.KAFKA_BROKERS?.split(',') || ['localhost:9092'],
+    clientId: 'surge-streamer',
+    consumerGroup: 'surge_prediction_group',
     topics: {
-      driverLocations: 'driver-locations',
-      rideRequests: 'ride-requests',
-      surgePredictions: 'surge-predictions',
-      weatherData: 'weather-data',
-      trafficData: 'traffic-data',
-      eventData: 'event-data',
+      locationData: 'location_data',
+      surgeEvents: 'surge_events',
+      predictionResults: 'prediction_results',
+      driverLocations: 'driver_locations',
+      rideRequests: 'ride_requests'
     },
+    consumerConfig: {
+      'auto.offset.reset': 'earliest',
+      'enable.auto.commit': true
+    }
   },
   
   redis: {
@@ -132,11 +136,85 @@ export const config = {
     },
   },
   
+  // Database configuration
+  database: {
+    uri: process.env.DATABASE_URI || 'mongodb://localhost:27017/surge-streamer',
+    dbName: process.env.DATABASE_NAME || 'surge-streamer',
+    options: {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      retryWrites: true,
+      w: 'majority',
+    },
+  },
+  
+  // MongoDB configuration (for backward compatibility)
+  mongodb: {
+    uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/surge-streamer',
+    options: {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    },
+    collections: {
+      locations: 'locations',
+      predictions: 'predictions',
+      historicalData: 'historical_data',
+      events: 'events',
+      weatherData: 'weather_data',
+      trafficData: 'traffic_data',
+      rideRequests: 'ride_requests',
+      gridCells: 'grid_cells',
+    },
+  },
+  
+  // API configuration
+  api: {
+    port: parseInt(process.env.API_PORT || '4000', 10),
+    host: process.env.API_HOST || 'localhost',
+    graphqlPath: process.env.GRAPHQL_PATH || '/graphql',
+    playground: process.env.GRAPHQL_PLAYGROUND === 'true',
+    introspection: process.env.GRAPHQL_INTROSPECTION === 'true',
+  },
+  
   // Additional environment-specific settings
   isDev: NODE_ENV === 'development',
   isProd: NODE_ENV === 'production',
   isTest: NODE_ENV === 'test',
   isStaging: NODE_ENV === 'staging',
+
+  /**
+   * GraphQL configuration
+   */
+  graphql: {
+    path: '/graphql',
+    subscriptionsPath: '/subscriptions',
+    playground: process.env.NODE_ENV !== 'production',
+    introspection: process.env.NODE_ENV !== 'production',
+  },
+
+  /**
+   * Streaming configuration
+   */
+  streaming: {
+    refreshInterval: 30000, // 30 seconds
+    batchSize: 100,
+  },
+
+  /**
+   * H3 configuration
+   */
+  h3: {
+    resolution: 9,
+  },
+
+  /**
+   * Prediction configuration
+   */
+  prediction: {
+    updateInterval: 60000, // 1 minute
+    historyWindow: 24 * 60 * 60 * 1000, // 24 hours
+    confidenceThreshold: 0.7,
+  },
 };
 
 export default config; 
