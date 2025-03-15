@@ -1,1 +1,8 @@
+
 project_id = "whazqibezrvxzkqwzsts"
+[functions.driver-location]
+verify_jwt = false
+[functions.ride-request]
+verify_jwt = false
+[functions.predict-surge]
+verify_jwt = false
