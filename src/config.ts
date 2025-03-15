@@ -53,6 +53,62 @@ export const config = {
     maxConnections: parseInt(process.env.MAX_CONNECTIONS || '100', 10),
   },
   
+  kafka: {
+    clientId: 'surge-streamer',
+    brokers: (process.env.KAFKA_BROKERS || 'localhost:29092').split(','),
+    topics: {
+      driverLocations: 'driver-locations',
+      rideRequests: 'ride-requests',
+      surgePredictions: 'surge-predictions',
+      weatherData: 'weather-data',
+      trafficData: 'traffic-data',
+      eventData: 'event-data'
+    },
+    consumerGroup: 'surge-streamer-group'
+  },
+  
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || '',
+    cacheTtl: parseInt(process.env.REDIS_CACHE_TTL || '3600', 10)
+  },
+  
+  ml: {
+    modelPath: process.env.ML_MODEL_PATH || path.join(__dirname, '../models'),
+    predictionInterval: parseInt(process.env.ML_PREDICTION_INTERVAL || '300000', 10), // 5 minutes
+    trainingInterval: parseInt(process.env.ML_TRAINING_INTERVAL || '86400000', 10), // 24 hours
+    historyWindowSize: parseInt(process.env.ML_HISTORY_WINDOW_SIZE || '168', 10), // 7 days in hours
+    features: [
+      'hour_of_day',
+      'day_of_week',
+      'is_weekend',
+      'is_holiday',
+      'temperature',
+      'precipitation',
+      'wind_speed',
+      'traffic_congestion',
+      'event_proximity',
+      'historical_demand',
+      'historical_supply'
+    ]
+  },
+  
+  externalApis: {
+    weather: {
+      apiKey: process.env.WEATHER_API_KEY || '',
+      baseUrl: process.env.WEATHER_API_URL || 'https://api.openweathermap.org/data/2.5'
+    },
+    traffic: {
+      apiKey: process.env.TRAFFIC_API_KEY || '',
+      baseUrl: process.env.TRAFFIC_API_URL || 'https://api.tomtom.com/traffic/services'
+    },
+    events: {
+      apiKey: process.env.EVENTS_API_KEY || '',
+      baseUrl: process.env.EVENTS_API_URL || 'https://api.predicthq.com/v1'
+    }
+  },
+  
   // Additional environment-specific settings
   isDevelopment: NODE_ENV === 'development',
   isProduction: NODE_ENV === 'production',

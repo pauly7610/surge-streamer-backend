@@ -1,61 +1,87 @@
-import { createDataPipeline } from './dataStream';
 import { Subscription } from 'rxjs';
 import { supabase } from './supabase';
 import { BoundingBox, ProcessedData } from '../types';
+import { initPredictionService, shutdownPredictionService } from '../ml/predictionService';
+import { startDataStream } from './dataStream';
+import { initProducer, disconnectKafka } from './kafka';
+import { trainSurgePredictionModel } from '../ml/models';
+import config from '../config';
 
 // Global subscription reference
 let pipelineSubscription: Subscription | null = null;
 let pipeline: any = null;
 
+// Pipeline cleanup function
+let cleanupFunction: (() => Promise<void>) | null = null;
+
 /**
- * Start the data pipeline
+ * Start the data processing pipeline
  */
-export async function startPipeline() {
-  console.log('Starting Surge Streamer data pipeline...');
+export const startPipeline = async (): Promise<void> => {
+  console.log('Starting data processing pipeline...');
   
   try {
-    // Create and start the data pipeline
-    pipeline = await createDataPipeline();
-    await pipeline.start();
+    // Initialize Kafka producer
+    await initProducer();
     
-    console.log('Data pipeline started successfully');
+    // Initialize ML prediction service
+    await initPredictionService();
+    
+    // Start data stream processing
+    const cleanup = await startDataStream();
+    
+    // Store cleanup function
+    cleanupFunction = async () => {
+      console.log('Cleaning up data processing pipeline...');
+      
+      // Stop data stream processing
+      if (cleanup) {
+        cleanup();
+      }
+      
+      // Shutdown prediction service
+      await shutdownPredictionService();
+      
+      // Disconnect Kafka
+      await disconnectKafka();
+      
+      console.log('Data processing pipeline cleaned up');
+    };
+    
+    console.log('Data processing pipeline started');
   } catch (error) {
-    console.error('Failed to start data pipeline:', error);
+    console.error('Failed to start data processing pipeline:', error);
     throw error;
   }
-}
+};
 
 /**
- * Stop the data pipeline
+ * Stop the data processing pipeline
  */
-export async function stopPipeline() {
-  if (pipeline) {
-    console.log('Shutting down data pipeline...');
-    await pipeline.stop();
-    console.log('Data pipeline stopped');
-    pipeline = null;
-  } else {
-    console.log('No pipeline running');
+export const stopPipeline = async (): Promise<void> => {
+  if (cleanupFunction) {
+    await cleanupFunction();
+    cleanupFunction = null;
   }
-}
+};
 
 /**
- * Save processed surge data to the database
+ * Save surge predictions to database
  */
-export async function saveSurgePredictions(predictions: ProcessedData[]): Promise<void> {
-  if (!predictions.length) return;
+export const saveSurgePredictions = async (predictions: any[]): Promise<void> => {
+  // This is a placeholder function that would save predictions to a database
+  console.log(`Saving ${predictions.length} surge predictions to database`);
   
-  const { error } = await supabase
-    .from('surge_predictions')
-    .upsert(predictions, { onConflict: 'h3_index' });
+  // In a real implementation, this would save to Supabase or another database
+  // For example:
+  // const { error } = await supabase
+  //   .from('surge_predictions')
+  //   .insert(predictions);
   
-  if (error) {
-    console.error('Error saving surge predictions:', error);
-    throw error;
-  }
-  
-  console.log(`Saved ${predictions.length} surge predictions`);
-}
+  // if (error) {
+  //   throw error;
+  // }
+};
 
 /**
  * Get the current bounding box for data processing
@@ -69,4 +95,52 @@ export function getCurrentProcessingArea(): BoundingBox {
     minLng: -122.5,
     maxLng: -122.35
   };
-} 
+}
+
+/**
+ * Schedule periodic model training
+ */
+function scheduleModelTraining() {
+  const trainingInterval = setInterval(async () => {
+    try {
+      console.log('Starting scheduled model training...');
+      
+      // Fetch historical data
+      const { data, error } = await supabase
+        .from('surge_predictions')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(1000);
+      
+      if (error) {
+        console.error('Error fetching training data:', error);
+        return;
+      }
+      
+      if (data.length === 0) {
+        console.log('No data available for training');
+        return;
+      }
+      
+      // Train the model
+      await trainSurgePredictionModel(data as ProcessedData[]);
+      
+      console.log('Scheduled model training completed');
+    } catch (error) {
+      console.error('Error during scheduled model training:', error);
+    }
+  }, 24 * 60 * 60 * 1000); // Train once a day
+  
+  // Return a function to clear the interval
+  return () => clearInterval(trainingInterval);
+}
+
+/**
+ * Stop the data processing pipeline
+ */
+export const stopDataProcessingPipeline = async (): Promise<void> => {
+  if (cleanupFunction) {
+    await cleanupFunction();
+    cleanupFunction = null;
+  }
+}; 

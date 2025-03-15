@@ -19,15 +19,20 @@ export interface DriverLocation extends GeoPoint {
   driver_id: string;
   timestamp: string;
   status: 'available' | 'busy' | 'offline';
+  heading?: number;
+  speed?: number;
+  accuracy?: number;
 }
 
 export interface RideRequest extends GeoPoint {
   id: string;
   user_id: string;
   timestamp: string;
+  destination: GeoPoint;
   status: 'pending' | 'accepted' | 'completed' | 'cancelled';
-  destination_latitude?: number;
-  destination_longitude?: number;
+  estimated_fare?: number;
+  estimated_duration?: number;
+  estimated_distance?: number;
 }
 
 export interface SurgePrediction extends GeoPoint {

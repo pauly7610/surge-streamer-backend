@@ -1,612 +1,256 @@
-import { supabase } from './supabase';
-import { latLongToHexId, getNeighboringHexes } from './geospatial';
-import { Subject, Observable } from 'rxjs';
-import { map, filter, bufferTime, mergeMap } from 'rxjs/operators';
-import { Subscription } from 'rxjs';
+import { Subscription, interval, Observable, Subject, from } from 'rxjs';
+import { mergeMap, map, buffer, filter, concatMap } from 'rxjs/operators';
+import { EachMessagePayload } from 'kafkajs';
+import { createConsumer } from './kafka';
+import { pointToH3 } from './geospatial';
+import { startPredictionService } from '../ml/predictionService';
+import { DriverLocation, RideRequest, DemandSupplyData, ProcessedData } from '../types';
+import config from '../config';
+import { createBoundingBox } from './geospatial';
+import { generateSurgePredictions } from '../ml/predictionService';
 
-// Global map for demand/supply data
-const demandSupplyMap = new Map<string, any>();
+// Global map to store demand/supply data by H3 index
+const demandSupplyMap = new Map<string, DemandSupplyData>();
 
-// Data event types
-export interface DataEvent {
-  source: string;
-  timestamp: Date;
-  payload: any;
-}
+// Subscription for the data pipeline
+let subscription: Subscription | null = null;
 
-export interface RideRequestEvent extends DataEvent {
-  payload: {
-    requestId: string;
-    userId: string;
-    pickupLatitude: number;
-    pickupLongitude: number;
-    dropoffLatitude: number;
-    dropoffLongitude: number;
-    estimatedDistance?: number;
-    estimatedDuration?: number;
-    rideType: 'ECONOMY' | 'COMFORT' | 'PREMIUM';
-    status: 'CREATED' | 'MATCHED' | 'CANCELLED' | 'COMPLETED';
-    deviceType?: string;
-    appVersion?: string;
-  };
-}
+// Subjects for incoming data
+const driverLocationSubject = new Subject<DriverLocation>();
+const rideRequestSubject = new Subject<RideRequest>();
 
-export interface DriverLocationEvent extends DataEvent {
-  payload: {
-    driverId: string;
-    latitude: number;
-    longitude: number;
-    heading?: number;
-    speed?: number;
-    availability: 'AVAILABLE' | 'BUSY' | 'OFFLINE';
-    vehicleType: 'ECONOMY' | 'COMFORT' | 'PREMIUM';
-    batteryLevel?: number;
-  };
-}
-
-export interface WeatherEvent extends DataEvent {
-  payload: {
-    latitude: number;
-    longitude: number;
-    temperature: number;
-    precipitation: number;
-    windSpeed: number;
-    condition: string;
-  };
-}
-
-export interface TrafficEvent extends DataEvent {
-  payload: {
-    latitude: number;
-    longitude: number;
-    congestionLevel: number;
-    averageSpeed: number;
-    incidentCount: number;
-  };
-}
-
-export interface EventCalendarEvent extends DataEvent {
-  payload: {
-    eventId: string;
-    name: string;
-    latitude: number;
-    longitude: number;
-    startTime: Date;
-    endTime: Date;
-    expectedAttendees: number;
-    category: string;
-  };
-}
-
-export interface SocialMediaEvent extends DataEvent {
-  payload: {
-    platform: string;
-    latitude: number;
-    longitude: number;
-    postCount: number;
-    sentiment: number;
-    keywords: string[];
-  };
-}
-
-// Data source connector interface
-export interface DataSourceConnector {
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-  isConnected(): boolean;
-  getStream(): Observable<DataEvent>;
-  getMetadata(): ConnectorMetadata;
-}
-
-export interface ConnectorMetadata {
-  name: string;
-  type: string;
-  updateFrequency: string;
-}
-
-// Base connector implementation
-abstract class BaseConnector implements DataSourceConnector {
-  protected connected: boolean = false;
-  protected eventStream: Subject<DataEvent> = new Subject<DataEvent>();
-  
-  abstract connect(): Promise<void>;
-  
-  async disconnect(): Promise<void> {
-    this.connected = false;
-    // Implement specific disconnection logic in subclasses
-  }
-  
-  isConnected(): boolean {
-    return this.connected;
-  }
-  
-  getStream(): Observable<DataEvent> {
-    return this.eventStream.asObservable();
-  }
-  
-  abstract getMetadata(): ConnectorMetadata;
-}
-
-// Ride Request Connector using Supabase
-export class RideRequestConnector extends BaseConnector {
-  private pollingInterval: NodeJS.Timeout | null = null;
-  
-  constructor(
-    private readonly refreshIntervalMs: number = 1000,
-  ) {
-    super();
-  }
-  
-  async connect(): Promise<void> {
-    try {
-      this.startPolling();
-      this.connected = true;
-    } catch (error) {
-      console.error("Failed to connect to Ride Request API:", error);
-      throw new Error("Connection failed");
-    }
-  }
-  
-  async disconnect(): Promise<void> {
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
-    }
-    await super.disconnect();
-  }
-  
-  getMetadata(): ConnectorMetadata {
-    return {
-      name: "Ride Request Connector",
-      type: "REST API Client",
-      updateFrequency: "Real-time (event-based)"
-    };
-  }
-  
-  private startPolling(): void {
-    this.pollingInterval = setInterval(async () => {
-      try {
-        // Get the latest ride requests from Supabase
-        const { data, error } = await supabase
-          .from('ride_requests')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(20);
-          
-        if (error) {
-          console.error("Error fetching ride requests:", error);
-          return;
-        }
-        
-        // Convert to events and emit
-        if (data) {
-          data.forEach(request => {
-            const event: RideRequestEvent = {
-              source: 'ride_requests',
-              timestamp: new Date(request.created_at),
-              payload: {
-                requestId: request.id,
-                userId: request.rider_id,
-                pickupLatitude: request.pickup_latitude,
-                pickupLongitude: request.pickup_longitude,
-                dropoffLatitude: request.destination_latitude,
-                dropoffLongitude: request.destination_longitude,
-                estimatedDistance: request.estimated_distance,
-                estimatedDuration: request.estimated_duration,
-                rideType: request.ride_type || 'ECONOMY',
-                status: this.mapStatus(request.status),
-                deviceType: request.device_type,
-                appVersion: request.app_version
-              }
-            };
-            
-            this.eventStream.next(event);
-          });
-        }
-      } catch (error) {
-        console.error("Error in ride request polling:", error);
-      }
-    }, this.refreshIntervalMs);
-  }
-  
-  private mapStatus(status: string): 'CREATED' | 'MATCHED' | 'CANCELLED' | 'COMPLETED' {
-    switch (status) {
-      case 'pending': return 'CREATED';
-      case 'accepted': return 'MATCHED';
-      case 'cancelled': return 'CANCELLED';
-      case 'completed': return 'COMPLETED';
-      default: return 'CREATED';
-    }
-  }
-}
-
-// Driver Location Connector using Supabase
-export class DriverLocationConnector extends BaseConnector {
-  private pollingInterval: NodeJS.Timeout | null = null;
-  
-  constructor(
-    private readonly refreshIntervalMs: number = 5000,
-  ) {
-    super();
-  }
-  
-  async connect(): Promise<void> {
-    try {
-      this.startPolling();
-      this.connected = true;
-    } catch (error) {
-      console.error("Failed to connect to Driver Location Service:", error);
-      throw new Error("Connection failed");
-    }
-  }
-  
-  async disconnect(): Promise<void> {
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
-    }
-    await super.disconnect();
-  }
-  
-  getMetadata(): ConnectorMetadata {
-    return {
-      name: "Driver Location Connector",
-      type: "WebSocket Client",
-      updateFrequency: "Continuous (1-5 sec intervals)"
-    };
-  }
-  
-  private startPolling(): void {
-    this.pollingInterval = setInterval(async () => {
-      try {
-        // Get the latest driver locations from Supabase
-        const { data, error } = await supabase
-          .from('driver_locations')
-          .select('*, drivers(*)')
-          .order('timestamp', { ascending: false });
-          
-        if (error) {
-          console.error("Error fetching driver locations:", error);
-          return;
-        }
-        
-        // Convert to events and emit
-        if (data) {
-          data.forEach(location => {
-            const event: DriverLocationEvent = {
-              source: 'driver_locations',
-              timestamp: new Date(location.timestamp),
-              payload: {
-                driverId: location.driver_id,
-                latitude: location.latitude,
-                longitude: location.longitude,
-                heading: location.heading,
-                speed: location.speed,
-                availability: location.is_available ? 'AVAILABLE' : 'BUSY',
-                vehicleType: location.drivers?.vehicle_type || 'ECONOMY',
-                batteryLevel: location.battery_level
-              }
-            };
-            
-            this.eventStream.next(event);
-          });
-        }
-      } catch (error) {
-        console.error("Error in driver location polling:", error);
-      }
-    }, this.refreshIntervalMs);
-  }
-}
-
-// Data Stream Pipeline
-export class DataStreamPipeline {
-  private connectors: DataSourceConnector[] = [];
-  private combinedStream: Observable<DataEvent>;
-  private processingEngine: DataProcessingEngine;
-  
-  constructor() {
-    // Initialize the processing engine
-    this.processingEngine = new DataProcessingEngine();
+/**
+ * Process driver location message from Kafka
+ */
+const processDriverLocationMessage = async (payload: EachMessagePayload) => {
+  try {
+    const { message } = payload;
+    if (!message.value) return;
     
-    // Create a combined stream from all connectors
-    this.combinedStream = new Observable<DataEvent>(observer => {
-      const subscriptions = this.connectors.map(connector => 
-        connector.getStream().subscribe(event => observer.next(event))
+    const driverLocation: DriverLocation = JSON.parse(message.value.toString());
+    console.log(`Received driver location: ${driverLocation.driver_id}`);
+    
+    // Update the demand/supply map
+    updateDemandSupplyMap(driverLocation);
+  } catch (error) {
+    console.error('Error processing driver location message:', error);
+  }
+};
+
+/**
+ * Process ride request message from Kafka
+ */
+const processRideRequestMessage = async (payload: EachMessagePayload) => {
+  try {
+    const { message } = payload;
+    if (!message.value) return;
+    
+    const rideRequest: RideRequest = JSON.parse(message.value.toString());
+    console.log(`Received ride request: ${rideRequest.id}`);
+    
+    // Update the demand/supply map
+    updateDemandSupplyMap(undefined, rideRequest);
+  } catch (error) {
+    console.error('Error processing ride request message:', error);
+  }
+};
+
+/**
+ * Update the demand/supply map with new data
+ */
+const updateDemandSupplyMap = (
+  driverLocation?: DriverLocation,
+  rideRequest?: RideRequest
+) => {
+  // Get the H3 index for the location
+  let h3Index: string;
+  let location: { latitude: number; longitude: number };
+  
+  if (driverLocation) {
+    location = {
+      latitude: driverLocation.latitude,
+      longitude: driverLocation.longitude
+    };
+    h3Index = getH3IndexForLocation(location);
+    
+    // Initialize if not exists
+    if (!demandSupplyMap.has(h3Index)) {
+      demandSupplyMap.set(h3Index, { demand: [], supply: [] });
+    }
+    
+    // Add to supply if driver is available
+    if (driverLocation.status === 'available') {
+      const data = demandSupplyMap.get(h3Index)!;
+      
+      // Remove old entries for this driver
+      data.supply = data.supply.filter(d => d.driver_id !== driverLocation.driver_id);
+      
+      // Add new entry
+      data.supply.push(driverLocation);
+      
+      // Update map
+      demandSupplyMap.set(h3Index, data);
+    }
+  }
+  
+  if (rideRequest) {
+    location = {
+      latitude: rideRequest.latitude,
+      longitude: rideRequest.longitude
+    };
+    h3Index = getH3IndexForLocation(location);
+    
+    // Initialize if not exists
+    if (!demandSupplyMap.has(h3Index)) {
+      demandSupplyMap.set(h3Index, { demand: [], supply: [] });
+    }
+    
+    // Add to demand if request is pending
+    if (rideRequest.status === 'pending') {
+      const data = demandSupplyMap.get(h3Index)!;
+      
+      // Remove old entries for this request
+      data.demand = data.demand.filter(r => r.id !== rideRequest.id);
+      
+      // Add new entry
+      data.demand.push(rideRequest);
+      
+      // Update map
+      demandSupplyMap.set(h3Index, data);
+    }
+  }
+};
+
+/**
+ * Get H3 index for a location
+ */
+const getH3IndexForLocation = (location: { latitude: number; longitude: number }): string => {
+  // This is a placeholder - in a real implementation, use the h3-js library
+  // to convert lat/lng to H3 index
+  return `${Math.floor(location.latitude * 100)}_${Math.floor(location.longitude * 100)}`;
+};
+
+/**
+ * Clean up old data from the demand/supply map
+ */
+const cleanupOldData = () => {
+  const now = new Date();
+  const maxAgeMs = 15 * 60 * 1000; // 15 minutes
+  
+  demandSupplyMap.forEach((data, h3Index) => {
+    // Filter out old driver locations
+    data.supply = data.supply.filter(d => {
+      const timestamp = new Date(d.timestamp);
+      return now.getTime() - timestamp.getTime() < maxAgeMs;
+    });
+    
+    // Filter out old ride requests
+    data.demand = data.demand.filter(r => {
+      const timestamp = new Date(r.timestamp);
+      return now.getTime() - timestamp.getTime() < maxAgeMs;
+    });
+    
+    // Update or remove if empty
+    if (data.supply.length === 0 && data.demand.length === 0) {
+      demandSupplyMap.delete(h3Index);
+    } else {
+      demandSupplyMap.set(h3Index, data);
+    }
+  });
+};
+
+/**
+ * Generate surge predictions for all areas
+ */
+const generateAllSurgePredictions = async () => {
+  console.log(`Generating surge predictions for ${demandSupplyMap.size} areas`);
+  
+  // Clean up old data first
+  cleanupOldData();
+  
+  // Generate predictions for each area
+  const predictions = [];
+  
+  for (const [h3Index, data] of demandSupplyMap.entries()) {
+    try {
+      // Skip areas with no demand or supply
+      if (data.demand.length === 0 && data.supply.length === 0) continue;
+      
+      // Calculate center point of the area
+      const center = calculateCenterPoint(data);
+      
+      // Generate prediction
+      const prediction = await generateSurgePredictions(
+        data.demand.length,
+        data.supply.length,
+        h3Index,
+        center.latitude,
+        center.longitude
       );
       
-      return () => {
-        subscriptions.forEach(sub => sub.unsubscribe());
-      };
-    });
-  }
-  
-  addConnector(connector: DataSourceConnector): void {
-    this.connectors.push(connector);
-  }
-  
-  async start(): Promise<void> {
-    // Connect all data sources
-    await Promise.all(this.connectors.map(connector => connector.connect()));
-    
-    // Start processing the combined stream
-    this.processingEngine.processStream(this.combinedStream);
-  }
-  
-  async stop(): Promise<void> {
-    // Disconnect all data sources
-    await Promise.all(this.connectors.map(connector => connector.disconnect()));
-    
-    // Stop the processing engine
-    this.processingEngine.stop();
-  }
-}
-
-// Data Processing Engine
-export class DataProcessingEngine {
-  private subscription: Subscription | null = null;
-  private geolocatedRequests = new Subject<any>();
-  private driverLocations = new Subject<any>();
-  private weatherUpdates = new Subject<any>();
-  private trafficConditions = new Subject<any>();
-  
-  constructor() {
-    // Set up the processing pipeline
-    this.setupProcessingPipeline();
-  }
-  
-  processStream(stream: Observable<DataEvent>): void {
-    this.subscription = stream.subscribe(event => {
-      // Route events to appropriate processors based on their type
-      switch (event.source) {
-        case 'ride_requests':
-          this.processRideRequest(event as RideRequestEvent);
-          break;
-        case 'driver_locations':
-          this.processDriverLocation(event as DriverLocationEvent);
-          break;
-        case 'weather_updates':
-          this.processWeatherUpdate(event as WeatherEvent);
-          break;
-        case 'traffic_conditions':
-          this.processTrafficCondition(event as TrafficEvent);
-          break;
-        // Add more event types as needed
-      }
-    });
-  }
-  
-  stop(): void {
-    if (this.subscription) {
-      this.subscription.unsubscribe();
-      this.subscription = null;
-    }
-  }
-  
-  private processRideRequest(event: RideRequestEvent): void {
-    // Convert to geolocated request
-    const hexKey = latLongToHexId(
-      event.payload.pickupLatitude, 
-      event.payload.pickupLongitude
-    );
-    
-    const geolocatedRequest = {
-      ...event,
-      hexKey,
-      neighbors: getNeighboringHexes(hexKey)
-    };
-    
-    this.geolocatedRequests.next(geolocatedRequest);
-  }
-  
-  private processDriverLocation(event: DriverLocationEvent): void {
-    // Convert to geolocated driver
-    const hexKey = latLongToHexId(
-      event.payload.latitude, 
-      event.payload.longitude
-    );
-    
-    const geolocatedDriver = {
-      ...event,
-      hexKey,
-      neighbors: getNeighboringHexes(hexKey)
-    };
-    
-    this.driverLocations.next(geolocatedDriver);
-  }
-  
-  private processWeatherUpdate(event: WeatherEvent): void {
-    // Process weather data
-    const hexKey = latLongToHexId(
-      event.payload.latitude, 
-      event.payload.longitude
-    );
-    
-    const geolocatedWeather = {
-      ...event,
-      hexKey
-    };
-    
-    this.weatherUpdates.next(geolocatedWeather);
-  }
-  
-  private processTrafficCondition(event: TrafficEvent): void {
-    // Process traffic data
-    const hexKey = latLongToHexId(
-      event.payload.latitude, 
-      event.payload.longitude
-    );
-    
-    const geolocatedTraffic = {
-      ...event,
-      hexKey
-    };
-    
-    this.trafficConditions.next(geolocatedTraffic);
-  }
-  
-  private setupProcessingPipeline(): void {
-    // Aggregate ride requests by hex
-    const demandByHex = this.geolocatedRequests.pipe(
-      bufferTime(5 * 60 * 1000), // 5-minute windows
-      map(requests => {
-        // Group by hex
-        const hexGroups = requests.reduce((acc: Record<string, any[]>, req: any) => {
-          const hexKey = req.hexKey;
-          if (!acc[hexKey]) {
-            acc[hexKey] = [];
-          }
-          acc[hexKey].push(req);
-          return acc;
-        }, {});
-        
-        // Calculate demand metrics for each hex
-        return Object.entries(hexGroups).map(([hexKey, hexRequests]) => ({
-          hexKey,
-          count: hexRequests.length,
-          timestamp: new Date(),
-        }));
-      }),
-      mergeMap(hexDemands => hexDemands)
-    );
-    
-    // Aggregate driver locations by hex
-    const supplyByHex = this.driverLocations.pipe(
-      bufferTime(5 * 60 * 1000), // 5-minute windows
-      map(drivers => {
-        // Group by hex
-        const hexGroups = drivers.reduce((acc: Record<string, any[]>, driver: any) => {
-          const hexKey = driver.hexKey;
-          if (!acc[hexKey]) {
-            acc[hexKey] = [];
-          }
-          acc[hexKey].push(driver);
-          return acc;
-        }, {});
-        
-        // Calculate supply metrics for each hex
-        return Object.entries(hexGroups).map(([hexKey, hexDrivers]) => ({
-          hexKey,
-          count: hexDrivers.length,
-          availableCount: hexDrivers.filter((d: any) => d.payload.availability === 'AVAILABLE').length,
-          timestamp: new Date(),
-        }));
-      }),
-      mergeMap(hexSupplies => hexSupplies)
-    );
-    
-    // Join demand and supply to calculate surge
-    // This is a simplified version - in a real system, you'd use a more sophisticated join
-    
-    demandByHex.subscribe(demand => {
-      demandSupplyMap.set(`demand_${demand.hexKey}`, demand);
-      this.calculateSurge(demand.hexKey);
-    });
-    
-    supplyByHex.subscribe(supply => {
-      demandSupplyMap.set(`supply_${supply.hexKey}`, supply);
-      this.calculateSurge(supply.hexKey);
-    });
-    
-    // Weather and traffic would be incorporated similarly
-    this.weatherUpdates.subscribe(weather => {
-      demandSupplyMap.set(`weather_${weather.hexKey}`, weather);
-      this.calculateSurge(weather.hexKey);
-    });
-    
-    this.trafficConditions.subscribe(traffic => {
-      demandSupplyMap.set(`traffic_${traffic.hexKey}`, traffic);
-      this.calculateSurge(traffic.hexKey);
-    });
-  }
-  
-  private calculateSurge(hexKey: string): void {
-    const demand = demandSupplyMap.get(`demand_${hexKey}`);
-    const supply = demandSupplyMap.get(`supply_${hexKey}`);
-    const weather = demandSupplyMap.get(`weather_${hexKey}`);
-    const traffic = demandSupplyMap.get(`traffic_${hexKey}`);
-    
-    // Only calculate if we have both demand and supply
-    if (demand && supply) {
-      // Basic surge calculation
-      let surgeMultiplier = 1.0;
-      
-      // Demand/supply ratio
-      const demandSupplyRatio = supply.availableCount > 0 
-        ? demand.count / supply.availableCount 
-        : demand.count > 0 ? 3.0 : 1.0; // If no drivers but demand, high surge
-      
-      surgeMultiplier *= Math.min(1 + (demandSupplyRatio * 0.5), 3.0);
-      
-      // Weather factor
-      if (weather && weather.payload.precipitation > 0.5) {
-        surgeMultiplier *= 1.2; // Increase surge in rainy conditions
-      }
-      
-      // Traffic factor
-      if (traffic && traffic.payload.congestionLevel > 0.7) {
-        surgeMultiplier *= 1.1; // Increase surge in heavy traffic
-      }
-      
-      // Cap the surge multiplier
-      surgeMultiplier = Math.min(Math.max(surgeMultiplier, 1.0), 3.0);
-      
-      // Create surge prediction
-      const surgePrediction = {
-        hexKey,
-        latitude: demand.latitude || 0,
-        longitude: demand.longitude || 0,
-        timestamp: new Date(),
-        surgeMultiplier,
-        demandLevel: demand.count,
-        supplyLevel: supply.availableCount,
-        factors: [
-          { name: 'demand_supply_ratio', contribution: demandSupplyRatio * 0.5 },
-          weather ? { name: 'weather', contribution: weather.payload.precipitation > 0.5 ? 0.2 : 0 } : null,
-          traffic ? { name: 'traffic', contribution: traffic.payload.congestionLevel > 0.7 ? 0.1 : 0 } : null,
-        ].filter(Boolean)
-      };
-      
-      // Store the prediction in Supabase
-      this.storeSurgePrediction(surgePrediction);
-    }
-  }
-  
-  private async storeSurgePrediction(prediction: any): Promise<void> {
-    try {
-      const { error } = await supabase
-        .from('surge_predictions')
-        .insert({
-          latitude: prediction.latitude,
-          longitude: prediction.longitude,
-          hex_id: prediction.hexKey,
-          surge_multiplier: prediction.surgeMultiplier,
-          demand_level: prediction.demandLevel,
-          supply_level: prediction.supplyLevel,
-          factors: prediction.factors,
-          predicted_at: new Date().toISOString(),
-          valid_until: new Date(Date.now() + 15 * 60 * 1000).toISOString() // Valid for 15 minutes
-        });
-        
-      if (error) {
-        console.error("Error storing surge prediction:", error);
-      }
+      predictions.push(prediction);
     } catch (error) {
-      console.error("Error in storeSurgePrediction:", error);
+      console.error(`Error generating prediction for area ${h3Index}:`, error);
     }
   }
-}
+  
+  console.log(`Generated ${predictions.length} surge predictions`);
+  return predictions;
+};
 
-// Factory to create the data pipeline
-export const createDataPipeline = async (): Promise<DataStreamPipeline> => {
-  const pipeline = new DataStreamPipeline();
+/**
+ * Calculate the center point of an area based on demand and supply
+ */
+const calculateCenterPoint = (data: DemandSupplyData) => {
+  const allPoints = [...data.demand, ...data.supply];
   
-  // Add connectors
-  pipeline.addConnector(new RideRequestConnector());
-  pipeline.addConnector(new DriverLocationConnector());
+  if (allPoints.length === 0) {
+    return { latitude: 0, longitude: 0 };
+  }
   
-  // Add more connectors as needed
-  // pipeline.addConnector(new WeatherConnector());
-  // pipeline.addConnector(new TrafficConnector());
+  const sumLat = allPoints.reduce((sum, point) => sum + point.latitude, 0);
+  const sumLng = allPoints.reduce((sum, point) => sum + point.longitude, 0);
   
-  return pipeline;
+  return {
+    latitude: sumLat / allPoints.length,
+    longitude: sumLng / allPoints.length
+  };
+};
+
+/**
+ * Start the data stream processing
+ */
+export const startDataStream = async () => {
+  console.log('Starting data stream processing...');
+  
+  // Create Kafka consumers
+  await createConsumer(
+    `${config.kafka.consumerGroup}-driver-locations`,
+    config.kafka.topics.driverLocations,
+    processDriverLocationMessage
+  );
+  
+  await createConsumer(
+    `${config.kafka.consumerGroup}-ride-requests`,
+    config.kafka.topics.rideRequests,
+    processRideRequestMessage
+  );
+  
+  // Set up periodic surge prediction generation
+  const interval = setInterval(async () => {
+    try {
+      await generateAllSurgePredictions();
+    } catch (error) {
+      console.error('Error in surge prediction cycle:', error);
+    }
+  }, config.ml.predictionInterval);
+  
+  // Return cleanup function
+  return () => {
+    clearInterval(interval);
+    if (subscription) {
+      subscription.unsubscribe();
+      subscription = null;
+    }
+  };
 }; 
