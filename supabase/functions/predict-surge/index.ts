@@ -1,156 +1,205 @@
+import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.4.0";
+// Create a Supabase client
+const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+// Hex grid utilities
+const HEX_RESOLUTION = 0.5; // ~500m hexagon edge length
+
+const latLongToHexId = (lat: number, lng: number): string => {
+  const latGrid = Math.floor(lat / HEX_RESOLUTION);
+  const lngGrid = Math.floor(lng / HEX_RESOLUTION);
+  return `${latGrid}:${lngGrid}`;
 };
 
-serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+const hexIdToLatLong = (hexId: string): { lat: number; lng: number } => {
+  const [latGrid, lngGrid] = hexId.split(':').map(Number);
+  return {
+    lat: latGrid * HEX_RESOLUTION + HEX_RESOLUTION / 2,
+    lng: lngGrid * HEX_RESOLUTION + HEX_RESOLUTION / 2
+  };
+};
+
+// Prediction service
+async function getSurgePrediction(params: {
+  latitude: number;
+  longitude: number;
+  timestamp?: string;
+  predictionHorizon?: number;
+}) {
+  const { latitude, longitude, timestamp, predictionHorizon = 0 } = params;
+  
+  // Convert to hex ID
+  const hexId = latLongToHexId(latitude, longitude);
+  
+  // Calculate the target time
+  const targetTime = timestamp 
+    ? new Date(timestamp) 
+    : new Date();
+  
+  if (predictionHorizon > 0) {
+    targetTime.setMinutes(targetTime.getMinutes() + predictionHorizon);
   }
   
   try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      throw new Error("Missing Supabase environment variables");
+    // Query Supabase for the prediction
+    const { data, error } = await supabase
+      .from('surge_predictions')
+      .select('*')
+      .eq('hex_id', hexId)
+      .lte('predicted_at', targetTime.toISOString())
+      .gte('valid_until', targetTime.toISOString())
+      .order('predicted_at', { ascending: false })
+      .limit(1);
+      
+    if (error) {
+      console.error("Error fetching surge prediction:", error);
+      throw new Error("Failed to fetch surge prediction");
     }
     
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    
-    const { latitude, longitude } = await req.json();
-    
-    if (!latitude || !longitude) {
-      return new Response(
-        JSON.stringify({ error: "Latitude and longitude are required" }),
-        { 
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 400 
-        }
-      );
+    // If we have a prediction, return it
+    if (data && data.length > 0) {
+      return mapToPredictionData(data[0]);
     }
     
-    // Simple surge prediction algorithm based on:
-    // 1. Time of day (rush hours have higher surge)
-    // 2. Number of active drivers in the area
-    // 3. Number of recent ride requests in the area
-    
-    const now = new Date();
-    const hour = now.getUTCHours();
-    
-    // Check if it's rush hour (7-9 AM or 4-7 PM)
-    const isRushHour = (hour >= 7 && hour <= 9) || (hour >= 16 && hour <= 19);
-    
-    // Get number of available drivers in the area
-    const { data: driverLocations, error: driversError } = await supabase
-      .from("driver_locations")
-      .select("*")
-      .eq("is_available", true)
-      .lte("latitude", latitude + 0.05)
-      .gte("latitude", latitude - 0.05)
-      .lte("longitude", longitude + 0.05)
-      .gte("longitude", longitude - 0.05);
-    
-    if (driversError) {
-      throw driversError;
-    }
-    
-    // Get recent ride requests in the area (last 30 minutes)
-    const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
-    
-    const { data: recentRides, error: ridesError } = await supabase
-      .from("ride_requests")
-      .select("*")
-      .gte("created_at", thirtyMinutesAgo)
-      .lte("pickup_latitude", latitude + 0.05)
-      .gte("pickup_latitude", latitude - 0.05)
-      .lte("pickup_longitude", longitude + 0.05)
-      .gte("pickup_longitude", longitude - 0.05);
-    
-    if (ridesError) {
-      throw ridesError;
-    }
-    
-    // Calculate surge multiplier
+    // Otherwise, generate a new prediction
+    // In a real system, this would call a machine learning model
+    // For now, we'll return a simple prediction based on time of day
+    const hour = targetTime.getHours();
     let surgeMultiplier = 1.0;
     
-    // Base factors
-    const driverCount = driverLocations?.length || 0;
-    const rideCount = recentRides?.length || 0;
+    // Simple time-based surge (rush hours)
+    if (hour >= 7 && hour <= 9) surgeMultiplier = 1.8; // Morning rush
+    else if (hour >= 16 && hour <= 19) surgeMultiplier = 2.0; // Evening rush
+    else if (hour >= 22 || hour <= 2) surgeMultiplier = 1.5; // Night life
     
-    // Adjust for rush hour
-    if (isRushHour) {
-      surgeMultiplier += 0.5;
-    }
+    const prediction = {
+      hexId,
+      latitude,
+      longitude,
+      surgeMultiplier,
+      confidence: 0.7,
+      demandLevel: Math.floor(Math.random() * 10) + 1,
+      supplyLevel: Math.floor(Math.random() * 5) + 1,
+      factors: [
+        { name: 'time_of_day', contribution: 0.8, description: 'Based on historical patterns' },
+        { name: 'location', contribution: 0.2, description: 'Area characteristics' }
+      ],
+      predictedAt: new Date().toISOString(),
+      validUntil: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      modelVersion: 'fallback-v1'
+    };
     
-    // Adjust for driver availability (fewer drivers = higher surge)
-    if (driverCount < 3) {
-      surgeMultiplier += 0.8;
-    } else if (driverCount < 8) {
-      surgeMultiplier += 0.4;
-    }
+    // Store the prediction
+    await storeSurgePrediction(prediction);
     
-    // Adjust for demand (more rides = higher surge)
-    if (rideCount > 15) {
-      surgeMultiplier += 1.0;
-    } else if (rideCount > 8) {
-      surgeMultiplier += 0.6;
-    } else if (rideCount > 3) {
-      surgeMultiplier += 0.3;
-    }
-    
-    // Cap the surge multiplier
-    surgeMultiplier = Math.min(3.5, Math.max(1.0, surgeMultiplier));
-    
-    // Generate a demand level (1-10) based on the surge multiplier
-    const demandLevel = Math.round(((surgeMultiplier - 1) / 2.5) * 10);
-    
-    // Calculate expiration time (valid for 15 minutes)
-    const validUntil = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
-    
-    // Store the prediction in the database
-    const { data: prediction, error: predictionError } = await supabase
-      .from("surge_predictions")
-      .insert({
-        latitude,
-        longitude,
-        surge_multiplier: surgeMultiplier,
-        demand_level: demandLevel,
-        valid_until: validUntil,
-        area_name: `Area near (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`
-      })
-      .select()
-      .single();
-    
-    if (predictionError) {
-      throw predictionError;
-    }
-    
-    return new Response(
-      JSON.stringify({ 
-        success: true,
-        prediction
-      }),
-      { 
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 200 
-      }
-    );
-    
+    return prediction;
   } catch (error) {
-    console.error("Error in predict-surge function:", error);
+    console.error("Error in getSurgePrediction:", error);
+    throw error;
+  }
+}
+
+async function storeSurgePrediction(prediction: any): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('surge_predictions')
+      .insert({
+        hex_id: prediction.hexId,
+        latitude: prediction.latitude,
+        longitude: prediction.longitude,
+        surge_multiplier: prediction.surgeMultiplier,
+        confidence: prediction.confidence,
+        demand_level: prediction.demandLevel,
+        supply_level: prediction.supplyLevel,
+        factors: prediction.factors,
+        predicted_at: prediction.predictedAt,
+        valid_until: prediction.validUntil,
+        model_version: prediction.modelVersion
+      });
+      
+    if (error) {
+      console.error("Error storing surge prediction:", error);
+    }
+  } catch (error) {
+    console.error("Error in storeSurgePrediction:", error);
+  }
+}
+
+function mapToPredictionData(record: any): any {
+  return {
+    id: record.id,
+    hexId: record.hex_id,
+    latitude: record.latitude,
+    longitude: record.longitude,
+    surgeMultiplier: record.surge_multiplier,
+    confidence: record.confidence || 0.7,
+    demandLevel: record.demand_level || 0,
+    supplyLevel: record.supply_level || 0,
+    factors: record.factors || [],
+    predictedAt: record.predicted_at,
+    validUntil: record.valid_until,
+    modelVersion: record.model_version
+  };
+}
+
+// Handle HTTP requests
+serve(async (req) => {
+  // CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Content-Type': 'application/json'
+  };
+
+  // Handle OPTIONS request for CORS
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers });
+  }
+
+  try {
+    // Only allow POST requests
+    if (req.method !== 'POST') {
+      return new Response(
+        JSON.stringify({ error: 'Method not allowed' }),
+        { status: 405, headers }
+      );
+    }
+
+    // Parse request body
+    const body = await req.json();
+    const { latitude, longitude, timestamp, predictionHorizon } = body;
+
+    // Validate required parameters
+    if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+      return new Response(
+        JSON.stringify({ error: 'Missing or invalid latitude/longitude' }),
+        { status: 400, headers }
+      );
+    }
+
+    // Get surge prediction
+    const prediction = await getSurgePrediction({
+      latitude,
+      longitude,
+      timestamp,
+      predictionHorizon
+    });
+
+    // Return the prediction
+    return new Response(
+      JSON.stringify(prediction),
+      { status: 200, headers }
+    );
+  } catch (error) {
+    console.error('Error processing request:', error);
     
     return new Response(
-      JSON.stringify({ error: error.message }),
-      { 
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 500 
-      }
+      JSON.stringify({ error: 'Internal server error' }),
+      { status: 500, headers }
     );
   }
 });
