@@ -1,25 +1,30 @@
 
-# Uber Surge Prediction
+# Surge Streamer Backend
 
-A web application that predicts Uber surge pricing based on various factors like location, time, weather, and demand.
+A backend system for predicting Uber surge pricing based on various factors like location, time, weather, and demand.
 
 ## Project Overview
 
-This project provides a frontend interface for predicting and visualizing Uber surge pricing. It connects to a Supabase backend for data storage and authentication.
+This project provides the backend infrastructure for the Surge Streamer application, offering data storage, authentication, and surge prediction algorithms. It connects to a Supabase database for persistent storage and user management.
 
 ### Features
 
-- Real-time surge prediction based on multiple factors
-- Interactive map visualization
-- User authentication and ride history
-- Weather integration for better predictions
+- Real-time surge prediction calculations
+- User authentication and account management
+- Ride history tracking and analytics
+- Weather data integration for better predictions
+- API endpoints for frontend integration
 
 ## Tech Stack
 
-- React with TypeScript
+- React with TypeScript (admin interface)
 - Tailwind CSS for styling
 - shadcn/ui component library
 - Supabase for backend services and database
+
+## GitHub Repository
+
+**URL**: https://github.com/pauly7610/surge-streamer-backend
 
 ## Lovable Development Info
 
@@ -39,10 +44,10 @@ If you want to work locally using your own IDE, you can clone this repo and push
 
 ```sh
 # Clone the repository
-git clone <YOUR_GIT_URL>
+git clone https://github.com/pauly7610/surge-streamer-backend.git
 
 # Navigate to the project directory
-cd <YOUR_PROJECT_NAME>
+cd surge-streamer-backend
 
 # Install dependencies
 npm i
