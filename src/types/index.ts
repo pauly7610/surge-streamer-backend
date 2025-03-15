@@ -35,13 +35,21 @@ export interface RideRequest extends GeoPoint {
   estimated_distance?: number;
 }
 
-export interface SurgePrediction extends GeoPoint {
+export interface SurgePrediction {
   id: string;
+  locationId: string;
+  h3Index: string;
   timestamp: string;
-  surge_factor: number;
-  h3_index?: string;
-  demand_count?: number;
-  supply_count?: number;
+  surgeMultiplier: number;
+  confidence: number;
+  predictedDuration: number;
+  factors: PredictionFactor[];
+}
+
+export interface PredictionFactor {
+  name: string;
+  description: string;
+  impact: number;
 }
 
 // Subscription types

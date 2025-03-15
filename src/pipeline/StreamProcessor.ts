@@ -522,4 +522,35 @@ export class StreamProcessor {
     // Cap surge factor
     return Math.min(3.0, Math.max(1.0, surgeFactor));
   }
+
+  /**
+   * Convert latitude and longitude to H3 index
+   * @param latitude Latitude
+   * @param longitude Longitude
+   * @returns H3 index
+   */
+  public latLngToH3(latitude: number, longitude: number): string {
+    return GeospatialUtils.GeospatialUtils.latLngToH3(latitude, longitude);
+  }
+
+  /**
+   * Get demand and supply data for an H3 index
+   * @param h3Index H3 index
+   * @returns Demand and supply data
+   */
+  public getDemandSupplyForH3(h3Index: string): any {
+    const gridCell = this.gridCells.get(h3Index);
+    
+    if (!gridCell) {
+      return {
+        demand: [],
+        supply: []
+      };
+    }
+    
+    return {
+      demand: gridCell.rideRequests || 0,
+      supply: gridCell.activeDrivers || 0
+    };
+  }
 } 

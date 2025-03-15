@@ -1,7 +1,12 @@
+import * as fs from 'fs';
 import { supabase } from '../services/supabase';
-import { trainSurgePredictionModel } from './models';
+import { trainModel as trainMLModel } from './models';
 import { ProcessedData } from '../types';
 import config from '../config';
+import { Logger } from '../utils/Logger';
+
+// Initialize logger
+const logger = new Logger('TrainModel');
 
 /**
  * Fetch historical data for training
@@ -48,7 +53,7 @@ const trainModel = async () => {
     }
     
     // Train the model
-    const model = await trainSurgePredictionModel(historicalData);
+    const model = await trainMLModel(historicalData);
     
     console.log('Model training completed successfully');
     

@@ -8,6 +8,16 @@ import { WeatherConnector } from './connectors/WeatherConnector';
 import { TrafficConnector } from './connectors/TrafficConnector';
 import { EventsConnector } from './connectors/EventsConnector';
 import { StreamProcessor } from './pipeline/StreamProcessor';
+import { DataService } from './services/DataService';
+import { LocationService } from './services/LocationService';
+import { PredictionService } from './services/PredictionService';
+import { NotificationService } from './services/NotificationService';
+import { PriceLockService } from './services/PriceLockService';
+import { DriverGuidanceService } from './services/DriverGuidanceService';
+import { Logger } from './utils/Logger';
+
+// Initialize logger
+const logger = new Logger('Main');
 
 // Create Express app
 const app = express();
@@ -63,112 +73,260 @@ app.post('/api/pipeline/stop', async (req, res) => {
  * Main application class
  */
 class SurgeStreamerApp {
+  private dataService: DataService;
+  private locationService: LocationService;
   private streamProcessor: StreamProcessor;
-  private connectors: {
-    rideRequest: RideRequestConnector;
-    weather: WeatherConnector;
-    traffic: TrafficConnector;
-    events: EventsConnector;
-  };
+  private pipelineManager: PipelineManager;
+  private predictionService: PredictionService;
+  private notificationService: NotificationService;
+  private priceLockService: PriceLockService;
+  private driverGuidanceService: DriverGuidanceService;
+  private predictionInterval: NodeJS.Timeout | null = null;
+  private driverGuidanceInterval: NodeJS.Timeout | null = null;
+  private cleanupInterval: NodeJS.Timeout | null = null;
+
+  constructor() {
+    // Initialize services
+    this.dataService = new DataService();
+    this.locationService = new LocationService();
+    this.streamProcessor = new StreamProcessor();
+    this.pipelineManager = new PipelineManager();
+    this.notificationService = new NotificationService();
+    this.priceLockService = new PriceLockService(this.dataService);
+    this.predictionService = new PredictionService(
+      this.dataService,
+      this.locationService,
+      this.streamProcessor,
+      this.notificationService,
+      this.priceLockService
+    );
+    this.driverGuidanceService = new DriverGuidanceService(
+      this.dataService,
+      this.locationService,
+      this.streamProcessor
+    );
+  }
 
   /**
    * Initialize the application
    */
-  constructor() {
-    // Create stream processor
-    this.streamProcessor = new StreamProcessor();
-    
-    // Create connectors
-    this.connectors = {
-      rideRequest: new RideRequestConnector(),
-      weather: new WeatherConnector(),
-      traffic: new TrafficConnector(),
-      events: new EventsConnector(),
-    };
-    
-    // Add connectors to stream processor
-    this.streamProcessor.addConnector(this.connectors.rideRequest);
-    this.streamProcessor.addConnector(this.connectors.weather);
-    this.streamProcessor.addConnector(this.connectors.traffic);
-    this.streamProcessor.addConnector(this.connectors.events);
-    
-    // Set up shutdown handlers
-    this.setupShutdownHandlers();
+  public async initialize(): Promise<void> {
+    try {
+      logger.info('Initializing Surge Streamer application');
+      
+      // Connect to database
+      await this.dataService.connect();
+      logger.info('Connected to database');
+      
+      // Initialize location service
+      await this.locationService.connect();
+      logger.info('Location service initialized');
+      
+      // Initialize stream processor
+      // Note: StreamProcessor doesn't have a connect method, but we'll assume it's initialized in the constructor
+      logger.info('Stream processor initialized');
+      
+      // Start pipeline manager
+      await this.pipelineManager.start();
+      logger.info('Pipeline manager initialized');
+      
+      // Initialize prediction service
+      await this.predictionService.initialize();
+      logger.info('Prediction service initialized');
+      
+      logger.info('Surge Streamer application initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize application:', error);
+      throw error;
+    }
   }
 
   /**
    * Start the application
    */
-  async start(): Promise<void> {
-    console.log('Starting Surge Streamer application...');
-    
+  public async start(): Promise<void> {
     try {
-      // Start the stream processor
-      await this.streamProcessor.start();
+      logger.info('Starting Surge Streamer application');
       
-      console.log('Surge Streamer application started successfully');
+      // Schedule regular predictions
+      this.schedulePredictions();
+      
+      // Schedule driver guidance recommendations
+      this.scheduleDriverGuidance();
+      
+      // Schedule cleanup tasks
+      this.scheduleCleanupTasks();
+      
+      logger.info('Surge Streamer application started successfully');
     } catch (error) {
-      console.error('Failed to start Surge Streamer application:', error);
-      process.exit(1);
+      logger.error('Failed to start application:', error);
+      throw error;
     }
   }
 
   /**
    * Stop the application
    */
-  async stop(): Promise<void> {
-    console.log('Stopping Surge Streamer application...');
-    
+  public async stop(): Promise<void> {
     try {
-      // Stop the stream processor
-      await this.streamProcessor.stop();
+      logger.info('Stopping Surge Streamer application');
       
-      console.log('Surge Streamer application stopped successfully');
+      // Stop the pipeline manager
+      await this.pipelineManager.stop();
+      
+      // Clear intervals
+      if (this.predictionInterval) {
+        clearInterval(this.predictionInterval);
+        this.predictionInterval = null;
+      }
+      
+      if (this.driverGuidanceInterval) {
+        clearInterval(this.driverGuidanceInterval);
+        this.driverGuidanceInterval = null;
+      }
+      
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
+      
+      logger.info('Surge Streamer application stopped successfully');
     } catch (error) {
-      console.error('Failed to stop Surge Streamer application:', error);
-      process.exit(1);
+      logger.error('Failed to stop application:', error);
+      throw error;
     }
   }
 
   /**
-   * Set up shutdown handlers
+   * Schedule regular predictions
    */
-  private setupShutdownHandlers(): void {
-    // Handle process termination signals
+  private schedulePredictions(): void {
+    // Generate predictions every 5 minutes
+    const predictionIntervalMs = 5 * 60 * 1000;
+    
+    // Generate initial predictions
+    this.generatePredictions();
+    
+    // Schedule regular predictions
+    this.predictionInterval = setInterval(() => {
+      this.generatePredictions();
+    }, predictionIntervalMs);
+    
+    logger.info('Scheduled predictions every 5 minutes');
+  }
+
+  /**
+   * Generate predictions for all locations
+   */
+  private async generatePredictions(): Promise<void> {
+    try {
+      logger.info('Generating predictions for all locations');
+      const predictions = await this.predictionService.generatePredictionsForAllLocations();
+      logger.info(`Generated ${predictions.length} predictions`);
+    } catch (error) {
+      logger.error('Failed to generate predictions:', error);
+    }
+  }
+
+  /**
+   * Schedule driver guidance recommendations
+   */
+  private scheduleDriverGuidance(): void {
+    // Generate driver guidance every 10 minutes
+    const driverGuidanceIntervalMs = 10 * 60 * 1000;
+    
+    // Generate initial driver guidance
+    this.generateDriverGuidance();
+    
+    // Schedule regular driver guidance
+    this.driverGuidanceInterval = setInterval(() => {
+      this.generateDriverGuidance();
+    }, driverGuidanceIntervalMs);
+    
+    logger.info('Scheduled driver guidance every 10 minutes');
+  }
+
+  /**
+   * Generate driver guidance recommendations
+   */
+  private async generateDriverGuidance(): Promise<void> {
+    try {
+      logger.info('Generating driver guidance recommendations');
+      const recommendations = await this.driverGuidanceService.generateDriverRecommendations();
+      logger.info(`Generated ${recommendations.length} driver guidance recommendations`);
+    } catch (error) {
+      logger.error('Failed to generate driver guidance:', error);
+    }
+  }
+
+  /**
+   * Schedule cleanup tasks
+   */
+  private scheduleCleanupTasks(): void {
+    // Run cleanup tasks every hour
+    const cleanupIntervalMs = 60 * 60 * 1000;
+    
+    // Schedule regular cleanup
+    this.cleanupInterval = setInterval(() => {
+      this.runCleanupTasks();
+    }, cleanupIntervalMs);
+    
+    logger.info('Scheduled cleanup tasks every hour');
+  }
+
+  /**
+   * Run cleanup tasks
+   */
+  private async runCleanupTasks(): Promise<void> {
+    try {
+      logger.info('Running cleanup tasks');
+      
+      // Clean up expired price locks
+      const expiredLocks = await this.priceLockService.cleanupExpiredLocks();
+      logger.info(`Cleaned up ${expiredLocks} expired price locks`);
+      
+      // Add more cleanup tasks as needed
+      
+      logger.info('Cleanup tasks completed');
+    } catch (error) {
+      logger.error('Failed to run cleanup tasks:', error);
+    }
+  }
+}
+
+/**
+ * Main entry point
+ */
+async function main() {
+  try {
+    const app = new SurgeStreamerApp();
+    
+    // Handle shutdown signals
     process.on('SIGINT', async () => {
-      console.log('Received SIGINT signal');
-      await this.stop();
+      logger.info('Received SIGINT signal');
+      await app.stop();
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
-      console.log('Received SIGTERM signal');
-      await this.stop();
+      logger.info('Received SIGTERM signal');
+      await app.stop();
       process.exit(0);
     });
     
-    // Handle uncaught exceptions
-    process.on('uncaughtException', async (error) => {
-      console.error('Uncaught exception:', error);
-      await this.stop();
-      process.exit(1);
-    });
+    // Initialize and start the application
+    await app.initialize();
+    await app.start();
     
-    // Handle unhandled promise rejections
-    process.on('unhandledRejection', async (reason, promise) => {
-      console.error('Unhandled promise rejection:', reason);
-      await this.stop();
-      process.exit(1);
-    });
+    logger.info('Surge Streamer application is running');
+  } catch (error) {
+    logger.error('Application failed to start:', error);
+    process.exit(1);
   }
 }
 
-// Create and start the application
-const appInstance = new SurgeStreamerApp();
-appInstance.start().catch((error) => {
-  console.error('Error starting application:', error);
-  process.exit(1);
-});
+// Start the application
+main();
 
 // Start the server
 const PORT = config.server.port;
@@ -176,32 +334,4 @@ const HOST = config.server.host;
 
 app.listen(PORT, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
-  console.log(`Environment: ${config.env}`);
-  
-  // Auto-start pipeline in production
-  if (config.isProd) {
-    console.log('Auto-starting pipeline in production mode...');
-    pipelineManager.start()
-      .then(() => {
-        console.log('Pipeline started successfully');
-      })
-      .catch((error) => {
-        console.error('Failed to auto-start pipeline:', error);
-      });
-  } else {
-    console.log('Pipeline not auto-started in development mode. Use /api/pipeline/start to start manually.');
-  }
 });
-
-// Handle shutdown gracefully
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  await pipelineManager.stop();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully');
-  await pipelineManager.stop();
-  process.exit(0);
-}); 

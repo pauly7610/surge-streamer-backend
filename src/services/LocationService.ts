@@ -395,4 +395,19 @@ export class LocationService {
       await this.connect();
     }
   }
+
+  /**
+   * Get all locations
+   */
+  async getAllLocations(): Promise<Location[]> {
+    try {
+      await this.ensureConnected();
+      
+      const locations = await this.collection!.find({}).toArray();
+      return locations.map(location => this.formatLocation(location));
+    } catch (error) {
+      this.logger.error('Failed to get all locations:', error);
+      throw error;
+    }
+  }
 } 

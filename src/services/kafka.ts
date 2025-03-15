@@ -66,11 +66,11 @@ export const sendRideRequest = async (request: RideRequest): Promise<void> => {
 export const sendSurgePrediction = async (prediction: SurgePrediction): Promise<void> => {
   const prod = await initProducer();
   await prod.send({
-    topic: config.kafka.topics.predictionResults,
+    topic: config.kafka.topics.surgeEvents,
     messages: [
-      { 
-        key: prediction.h3_index || prediction.id, 
-        value: JSON.stringify(prediction) 
+      {
+        key: prediction.h3Index || prediction.id,
+        value: JSON.stringify(prediction)
       }
     ]
   });

@@ -1,7 +1,7 @@
 import { Logger } from '../utils/Logger';
 import { RideRequestData, WeatherData, TrafficData, EventData, GridCellData, GeospatialQuery } from '../schemas/DataModels';
 import { GeospatialUtils } from '../utils/GeospatialUtils';
-import { MongoClient, Collection } from 'mongodb';
+import { MongoClient, Collection, Db } from 'mongodb';
 import { config } from '../config';
 
 /**
@@ -16,6 +16,19 @@ export class DataService {
   private eventsCollection: Collection<EventData>;
   private gridCellDataCollection: Collection<GridCellData>;
   private isConnected: boolean = false;
+  
+  // Public properties for database access
+  public db: Db;
+  public collections = {
+    locations: config.mongodb.collections.locations || 'locations',
+    predictions: config.mongodb.collections.predictions || 'predictions',
+    historicalData: config.mongodb.collections.historicalData || 'historical_data',
+    events: config.mongodb.collections.events || 'events',
+    weatherData: config.mongodb.collections.weatherData || 'weather_data',
+    trafficData: config.mongodb.collections.trafficData || 'traffic_data',
+    rideRequests: config.mongodb.collections.rideRequests || 'ride_requests',
+    gridCells: config.mongodb.collections.gridCells || 'grid_cells'
+  };
 
   constructor() {
     this.logger = new Logger('DataService');
@@ -28,14 +41,14 @@ export class DataService {
     try {
       this.logger.info('Connecting to MongoDB...');
       this.mongoClient = await MongoClient.connect(config.mongodb.uri);
-      const db = this.mongoClient.db();
+      this.db = this.mongoClient.db();
       
       // Initialize collections
-      this.rideRequestsCollection = db.collection<RideRequestData>(config.mongodb.collections.rideRequests || 'ride_requests');
-      this.weatherDataCollection = db.collection<WeatherData>(config.mongodb.collections.weatherData || 'weather_data');
-      this.trafficDataCollection = db.collection<TrafficData>(config.mongodb.collections.trafficData || 'traffic_data');
-      this.eventsCollection = db.collection<EventData>(config.mongodb.collections.events || 'events');
-      this.gridCellDataCollection = db.collection<GridCellData>(config.mongodb.collections.gridCells || 'grid_cells');
+      this.rideRequestsCollection = this.db.collection<RideRequestData>(this.collections.rideRequests);
+      this.weatherDataCollection = this.db.collection<WeatherData>(this.collections.weatherData);
+      this.trafficDataCollection = this.db.collection<TrafficData>(this.collections.trafficData);
+      this.eventsCollection = this.db.collection<EventData>(this.collections.events);
+      this.gridCellDataCollection = this.db.collection<GridCellData>(this.collections.gridCells);
       
       // Create indexes
       await this.createIndexes();

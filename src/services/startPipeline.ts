@@ -1,10 +1,10 @@
 import { Subscription } from 'rxjs';
 import { supabase } from './supabase';
 import { BoundingBox, ProcessedData } from '../types';
-import { initPredictionService, shutdownPredictionService } from '../ml/predictionService';
+import { initializePredictionService, shutdownPredictionService } from '../ml/predictionService';
 import { startDataStream } from './dataStream';
 import { initProducer, disconnectKafka } from './kafka';
-import { trainSurgePredictionModel } from '../ml/models';
+import { trainModel } from '../ml/models';
 import config from '../config';
 
 // Global subscription reference
@@ -25,7 +25,7 @@ export const startPipeline = async (): Promise<void> => {
     await initProducer();
     
     // Initialize ML prediction service
-    await initPredictionService();
+    await initializePredictionService();
     
     // Start data stream processing
     const cleanup = await startDataStream();
@@ -123,7 +123,7 @@ function scheduleModelTraining() {
       }
       
       // Train the model
-      await trainSurgePredictionModel(data as ProcessedData[]);
+      await trainModel(data as ProcessedData[]);
       
       console.log('Scheduled model training completed');
     } catch (error) {

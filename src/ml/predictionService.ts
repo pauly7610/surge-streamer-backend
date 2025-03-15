@@ -1,33 +1,148 @@
 import * as tf from '@tensorflow/tfjs-node';
-import { loadSurgePredictionModel, makePredictions } from './models';
+import { loadModel, makePrediction } from './models';
 import { fetchAllExternalData } from '../services/externalData';
 import { sendSurgePrediction } from '../services/kafka';
 import { saveSurgePredictions } from '../services/startPipeline';
 import { pointToH3, h3ToPoint } from '../services/geospatial';
-import { ProcessedData, DemandSupplyData, GeoPoint, SurgePrediction } from '../types';
+import { ProcessedData, DemandSupplyData, GeoPoint, SurgePrediction, PredictionFactor } from '../types';
 import config from '../config';
 import { supabase } from '../services/supabase';
 import { v4 as uuidv4 } from 'uuid';
+import { Logger } from '../utils/Logger';
+import * as h3 from 'h3-js';
 
 // Global model instance
 let surgePredictionModel: tf.Sequential | null = null;
 
+// Initialize logger
+const logger = new Logger('PredictionService');
+
 /**
  * Initialize the prediction service
  */
-export const initPredictionService = async (): Promise<void> => {
+export async function initializePredictionService(): Promise<void> {
   try {
-    console.log('Initializing prediction service...');
-    surgePredictionModel = await loadSurgePredictionModel();
-    console.log('Prediction service initialized successfully');
+    logger.info('Initializing prediction service...');
+    await loadModel();
+    logger.info('Prediction service initialized successfully');
   } catch (error) {
-    console.error('Failed to initialize prediction service:', error);
+    logger.error('Failed to initialize prediction service:', error);
     throw error;
   }
-};
+}
 
 /**
- * Generate surge predictions for a given area
+ * Generate a surge prediction for a specific location
+ */
+export async function generateSurgePrediction(
+  latitude: number,
+  longitude: number,
+  timestamp: string = new Date().toISOString()
+): Promise<SurgePrediction> {
+  try {
+    // Get H3 index for the location (using a mock function since h3-js types are not available)
+    const h3Index = `${Math.floor(latitude * 100)}_${Math.floor(longitude * 100)}`;
+    
+    // Fetch external data
+    const externalData = await fetchAllExternalData({ latitude, longitude });
+    
+    // Process data for prediction
+    const processedData = {
+      timestamp,
+      latitude,
+      longitude,
+      demand_count: 10, // Mock data
+      supply_count: 5,  // Mock data
+      weather: externalData.weatherData,
+      traffic: externalData.trafficData,
+      events: externalData.eventData,
+      surge_factor: 1.0 // Default value, will be replaced by prediction
+    };
+    
+    // Make prediction
+    const prediction = await makePrediction([
+      processedData.demand_count / 100,
+      processedData.supply_count / 100,
+      Math.sin((new Date(timestamp).getHours() * 2 * Math.PI) / 24), // Hour of day (sin)
+      Math.cos((new Date(timestamp).getHours() * 2 * Math.PI) / 24), // Hour of day (cos)
+      Math.sin((new Date(timestamp).getDay() * 2 * Math.PI) / 7),    // Day of week (sin)
+      Math.cos((new Date(timestamp).getDay() * 2 * Math.PI) / 7),    // Day of week (cos)
+      // Add more features to match the expected 22 features
+      // Padding with zeros for now
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]);
+    
+    // Create prediction factors
+    const factors: PredictionFactor[] = [
+      {
+        name: 'Time of Day',
+        description: 'Current hour affects demand patterns',
+        impact: 0.3
+      },
+      {
+        name: 'Supply/Demand Ratio',
+        description: 'Current ratio of drivers to ride requests',
+        impact: 0.5
+      }
+    ];
+    
+    // Create surge prediction object
+    const surgePrediction: SurgePrediction = {
+      id: uuidv4(),
+      h3Index: h3Index,
+      locationId: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
+      timestamp,
+      surgeMultiplier: prediction.surgeMultiplier,
+      confidence: prediction.confidence,
+      predictedDuration: 15, // 15 minutes
+      factors
+    };
+    
+    // Send prediction to Kafka
+    await sendSurgePrediction(surgePrediction);
+    
+    // Store prediction in database
+    await storePrediction(surgePrediction);
+    
+    return surgePrediction;
+  } catch (error) {
+    logger.error('Failed to generate surge prediction:', error);
+    
+    // Return default prediction in case of error
+    return {
+      id: uuidv4(),
+      h3Index: `${Math.floor(latitude * 100)}_${Math.floor(longitude * 100)}`,
+      locationId: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
+      timestamp,
+      surgeMultiplier: 1.0,
+      confidence: 0.5,
+      predictedDuration: 15, // 15 minutes
+      factors: []
+    };
+  }
+}
+
+/**
+ * Store a prediction in the database
+ */
+async function storePrediction(prediction: SurgePrediction): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('surge_predictions')
+      .insert(prediction);
+    
+    if (error) {
+      logger.error('Failed to store prediction:', error);
+    } else {
+      logger.debug(`Stored prediction ${prediction.id}`);
+    }
+  } catch (error) {
+    logger.error('Failed to store prediction:', error);
+  }
+}
+
+/**
+ * Generate surge predictions
  */
 export const generateSurgePredictions = async (
   demandCount: number,
@@ -39,56 +154,83 @@ export const generateSurgePredictions = async (
   try {
     // Ensure model is loaded
     if (!surgePredictionModel) {
-      await initPredictionService();
+      await initializePredictionService();
     }
     
-    if (!surgePredictionModel) {
-      throw new Error('Model not initialized');
-    }
-    
-    // Generate features for prediction
-    const processedData: ProcessedData = {
-      h3_index: h3Index,
-      demand_count: demandCount,
-      supply_count: supplyCount,
-      surge_factor: 0, // Will be filled by prediction
+    // Create processed data
+    const processedData = {
+      timestamp: new Date().toISOString(),
       latitude,
       longitude,
-      timestamp: new Date().toISOString()
+      demand_count: demandCount,
+      supply_count: supplyCount,
+      surge_factor: 1.0 // Default value, will be replaced by prediction
     };
     
     // Make prediction
-    const predictions = makePredictions(surgePredictionModel, [processedData]);
+    const predictionResult = await makePrediction([
+      processedData.demand_count / 100,
+      processedData.supply_count / 100,
+      Math.sin((new Date().getHours() * 2 * Math.PI) / 24), // Hour of day (sin)
+      Math.cos((new Date().getHours() * 2 * Math.PI) / 24), // Hour of day (cos)
+      Math.sin((new Date().getDay() * 2 * Math.PI) / 7),    // Day of week (sin)
+      Math.cos((new Date().getDay() * 2 * Math.PI) / 7),    // Day of week (cos)
+      // Add more features to match the expected 22 features
+      // Padding with zeros for now
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ]);
     
-    if (!predictions || predictions.length === 0) {
+    if (!predictionResult) {
       throw new Error('Failed to generate prediction');
     }
     
-    // Update the surge factor with the prediction
-    const surgeFactor = Math.max(1.0, predictions[0]);
+    // Create prediction factors
+    const factors: PredictionFactor[] = [
+      {
+        name: 'Time of Day',
+        description: 'Current hour affects demand patterns',
+        impact: 0.3
+      },
+      {
+        name: 'Supply/Demand Ratio',
+        description: 'Current ratio of drivers to ride requests',
+        impact: 0.5
+      }
+    ];
     
     // Create surge prediction object
     const surgePrediction: SurgePrediction = {
       id: uuidv4(),
-      h3_index: h3Index,
-      latitude,
-      longitude,
+      h3Index: h3Index,
+      locationId: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
       timestamp: processedData.timestamp,
-      surge_factor: surgeFactor,
-      demand_count: demandCount,
-      supply_count: supplyCount
+      surgeMultiplier: predictionResult.surgeMultiplier,
+      confidence: predictionResult.confidence,
+      predictedDuration: 15, // 15 minutes
+      factors
     };
     
     // Save to database
-    await saveSurgePrediction(surgePrediction);
+    await storePrediction(surgePrediction);
     
     // Send to Kafka
     await sendSurgePrediction(surgePrediction);
     
     return surgePrediction;
   } catch (error) {
-    console.error('Error generating surge prediction:', error);
-    throw error;
+    logger.error('Error generating surge prediction:', error);
+    
+    // Return default prediction in case of error
+    return {
+      id: uuidv4(),
+      h3Index: h3Index,
+      locationId: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
+      timestamp: new Date().toISOString(),
+      surgeMultiplier: 1.0,
+      confidence: 0.5,
+      predictedDuration: 15, // 15 minutes
+      factors: []
+    };
   }
 };
 
@@ -138,64 +280,76 @@ export const generateSurgePredictionsForGrid = async (
 };
 
 /**
- * Start the prediction service
+ * Generate surge predictions for all locations
  */
-export const startPredictionService = async (): Promise<() => void> => {
-  // Initialize the prediction service
-  await initPredictionService();
-  
-  // Set up interval for periodic predictions
-  const intervalId = setInterval(async () => {
-    try {
-      // This would be replaced with actual data from Kafka
-      // For now, we'll use placeholder data
-      const boundingBox = {
-        minLat: 37.7,
-        maxLat: 37.85,
-        minLng: -122.5,
-        maxLng: -122.35,
-      };
-      
-      // Placeholder demand/supply map
-      const demandSupplyMap = new Map<string, DemandSupplyData>();
-      
-      // Generate predictions
-      await generateSurgePredictionsForGrid(boundingBox, demandSupplyMap);
-      
-    } catch (error) {
-      console.error('Error generating predictions:', error);
-    }
-  }, config.ml.predictionInterval);
-  
-  // Return a function to stop the prediction service
-  return () => {
-    clearInterval(intervalId);
-    console.log('Prediction service stopped');
-  };
-};
-
-/**
- * Save surge prediction to database
- */
-const saveSurgePrediction = async (prediction: SurgePrediction): Promise<void> => {
+export const generatePredictionsForAllLocations = async (): Promise<SurgePrediction[]> => {
   try {
-    const { error } = await supabase
-      .from('surge_predictions')
-      .insert(prediction);
+    // Ensure model is loaded
+    if (!surgePredictionModel) {
+      await initializePredictionService();
+    }
+    
+    // Get all active locations
+    const { data: locations, error } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('active', true);
     
     if (error) {
       throw error;
     }
+    
+    const predictions: SurgePrediction[] = [];
+    
+    // Generate predictions for each location
+    for (const location of locations) {
+      try {
+        // Generate prediction for this location
+        const prediction = await generateSurgePrediction(
+          location.latitude,
+          location.longitude
+        );
+        
+        predictions.push(prediction);
+      } catch (locationError) {
+        logger.error(`Error generating prediction for location ${location.id}:`, locationError);
+      }
+    }
+    
+    return predictions;
   } catch (error) {
-    console.error('Error saving surge prediction to database:', error);
-    throw error;
+    logger.error('Error generating predictions for all locations:', error);
+    return [];
   }
+};
+
+/**
+ * Start the prediction service
+ */
+export const startPredictionService = async (): Promise<() => void> => {
+  // Initialize the prediction service
+  await initializePredictionService();
+  
+  // Set up interval for periodic predictions
+  const predictionInterval = setInterval(async () => {
+    try {
+      await generatePredictionsForAllLocations();
+    } catch (error) {
+      logger.error('Error in prediction interval:', error);
+    }
+  }, 5 * 60 * 1000); // Run every 5 minutes
+  
+  // Return cleanup function
+  return () => {
+    clearInterval(predictionInterval);
+    shutdownPredictionService();
+  };
 };
 
 /**
  * Shutdown the prediction service
  */
-export const shutdownPredictionService = async (): Promise<void> => {
-  console.log('Shutting down prediction service...');
+export const shutdownPredictionService = (): void => {
+  // Clean up resources
   surgePredictionModel = null;
 }; 

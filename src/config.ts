@@ -58,16 +58,18 @@ export const config = {
   },
   
   kafka: {
-    brokers: process.env.KAFKA_BROKERS?.split(',') || ['localhost:9092'],
-    clientId: 'surge-streamer',
-    consumerGroup: 'surge_prediction_group',
+    clientId: process.env.KAFKA_CLIENT_ID || 'surge-streamer',
+    brokers: (process.env.KAFKA_BROKERS || 'localhost:9092').split(','),
     topics: {
-      locationData: 'location_data',
-      surgeEvents: 'surge_events',
-      predictionResults: 'prediction_results',
-      driverLocations: 'driver_locations',
-      rideRequests: 'ride_requests'
+      locationData: process.env.KAFKA_TOPIC_LOCATION_DATA || 'location-data',
+      surgeEvents: process.env.KAFKA_TOPIC_SURGE_EVENTS || 'surge-events',
+      predictionResults: process.env.KAFKA_TOPIC_PREDICTION_RESULTS || 'prediction-results',
+      driverLocations: process.env.KAFKA_TOPIC_DRIVER_LOCATIONS || 'driver-locations',
+      rideRequests: process.env.KAFKA_TOPIC_RIDE_REQUESTS || 'ride-requests',
+      notifications: process.env.KAFKA_TOPIC_NOTIFICATIONS || 'notifications',
+      driverGuidance: process.env.KAFKA_TOPIC_DRIVER_GUIDANCE || 'driver-guidance'
     },
+    consumerGroup: 'surge_prediction_group',
     consumerConfig: {
       'auto.offset.reset': 'earliest',
       'enable.auto.commit': true
@@ -156,14 +158,18 @@ export const config = {
       useUnifiedTopology: true,
     },
     collections: {
-      locations: 'locations',
-      predictions: 'predictions',
-      historicalData: 'historical_data',
-      events: 'events',
-      weatherData: 'weather_data',
-      trafficData: 'traffic_data',
-      rideRequests: 'ride_requests',
-      gridCells: 'grid_cells',
+      locations: process.env.MONGODB_COLLECTION_LOCATIONS || 'locations',
+      predictions: process.env.MONGODB_COLLECTION_PREDICTIONS || 'predictions',
+      historicalData: process.env.MONGODB_COLLECTION_HISTORICAL_DATA || 'historical_data',
+      events: process.env.MONGODB_COLLECTION_EVENTS || 'events',
+      weatherData: process.env.MONGODB_COLLECTION_WEATHER_DATA || 'weather_data',
+      trafficData: process.env.MONGODB_COLLECTION_TRAFFIC_DATA || 'traffic_data',
+      rideRequests: process.env.MONGODB_COLLECTION_RIDE_REQUESTS || 'ride_requests',
+      gridCells: process.env.MONGODB_COLLECTION_GRID_CELLS || 'grid_cells',
+      priceLocks: process.env.MONGODB_COLLECTION_PRICE_LOCKS || 'price_locks',
+      priceLockAllocations: process.env.MONGODB_COLLECTION_PRICE_LOCK_ALLOCATIONS || 'price_lock_allocations',
+      notifications: process.env.MONGODB_COLLECTION_NOTIFICATIONS || 'notifications',
+      driverGuidance: process.env.MONGODB_COLLECTION_DRIVER_GUIDANCE || 'driver_guidance'
     },
   },
   
