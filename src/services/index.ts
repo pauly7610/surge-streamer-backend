@@ -20,4 +20,18 @@ export * from './geospatial';
 export * from './prediction';
 export * from './dataStream';
 export { supabase } from './supabase';
-export * from './startPipeline'; 
+
+// Import and export startPipeline and stopPipeline
+import { 
+  startPipeline, 
+  stopPipeline,
+  saveSurgePredictions,
+  getCurrentProcessingArea
+} from './startPipeline';
+
+export {
+  startPipeline,
+  stopPipeline,
+  saveSurgePredictions,
+  getCurrentProcessingArea
+}; 
